@@ -4,6 +4,7 @@ import fcntl
 import os
 from pathlib import Path
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -12,6 +13,87 @@ from .core import Helper, HelperError, OperationInProgress
 
 ACTIVE_APPS = {"msw.exe", "ngm.exe", "ngm64.exe", "nexonlauncher64.exe", "winecfg.exe", "regedit.exe"}
 BACKGROUND_APPS = {"vuplex webview.vuplex", "msedgewebview2.exe", "microsoftedgeupdate.exe"}
+QUIT_MESSAGE = b"Input System module state changed to: ShutdownInProgress."
+
+
+class QuitLog:
+    """Observe new Unity quit messages without logging any game/account data."""
+
+    def __init__(self, helper):
+        self.users = helper.prefix / "drive_c/users"
+        self.files = {}
+        self.poll(initial=True)
+
+    def poll(self, *, initial=False):
+        found = False
+        for path in self.users.glob("*/AppData/LocalLow/nexon/MapleStory Worlds/Player.log"):
+            try:
+                with path.open("rb") as log:
+                    info = os.fstat(log.fileno())
+                    identity = (info.st_dev, info.st_ino)
+                    old_identity, offset, partial = self.files.get(path, (None, 0, b""))
+                    if initial:
+                        # An earlier session's quit must never stop a new game.
+                        self.files[path] = (identity, info.st_size, b"")
+                        continue
+                    if old_identity != identity or info.st_size < offset:
+                        offset, partial = 0, b""
+                    log.seek(offset)
+                    data = log.read(65536)
+                    lines = (partial + data).split(b"\n")
+                    found |= any(line.rstrip(b"\r") == QUIT_MESSAGE for line in lines[:-1])
+                    self.files[path] = (identity, log.tell(), lines[-1][-256:])
+            except (FileNotFoundError, PermissionError):
+                continue
+        return found
+
+    def wait(self, timeout):
+        if not self.files:
+            time.sleep(timeout)
+            return self.poll()
+        # Only read the small log tail frequently; /proc scans remain infrequent.
+        deadline = time.monotonic() + timeout
+        while True:
+            if self.poll():
+                return True
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            time.sleep(min(0.05, remaining))
+
+
+def terminate_processes(helper, names):
+    """End selected processes in the owned prefix using stable kernel handles."""
+    from .maintenance import validate_ownership
+    validate_ownership(helper)
+    for pid, name in native_processes(helper.prefix).items():
+        if name not in names or pid == os.getpid():
+            continue
+        try:
+            fd = os.pidfd_open(pid)
+        except ProcessLookupError:
+            continue
+        try:
+            # A recycled PID between inspection and pidfd_open must not target
+            # an unrelated process. Once opened, the handle cannot change owner.
+            if native_processes(helper.prefix).get(pid) == name:
+                signal.pidfd_send_signal(fd, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        finally:
+            os.close(fd)
+
+
+def finish_quit(helper):
+    """Allow normal teardown, then finish even if the game or CEF stalls."""
+    helper.emit("Worlds confirmed Quit. Waiting briefly for it to finish…")
+    deadline = time.monotonic() + 5
+    while "msw.exe" in native_processes(helper.prefix).values():
+        if time.monotonic() >= deadline:
+            helper.emit("Finishing the remaining Worlds shutdown…")
+            break
+        time.sleep(0.1)
+    shutdown_prefix(helper)
 
 
 def native_processes(prefix, proc_root=Path("/proc")):
@@ -56,8 +138,33 @@ def shutdown_prefix(helper):
     if server is None:
         raise HelperError(f"Cannot find the matching wineserver beside {wine}.")
     helper.emit("Stopping Wine background services for Worlds…")
-    subprocess.run([str(server), "-k"], env=helper.env(), check=True, timeout=15)
-    subprocess.run([str(server), "-w"], env=helper.env(), check=True, timeout=30)
+    failure = None
+    try:
+        subprocess.run([str(server), "-k"], env=helper.env(), check=True, timeout=5)
+        subprocess.run([str(server), "-w"], env=helper.env(), check=True, timeout=5)
+    except (OSError, subprocess.SubprocessError) as exc:
+        failure = exc
+        helper.emit("Wine shutdown did not finish; checking for stuck Worlds processes…")
+    remaining = native_processes(helper.prefix)
+    if remaining:
+        # Crash handlers and browser children can outlive Wine's server. Limit
+        # the fallback to known Wine images and their native crash handler.
+        names = {name for name in remaining.values()
+                 if name.endswith((".exe", ".vuplex", ".aes")) or name in {
+                     "wineserver", "wine", "wine64", "wine-preloader", "wine64-preloader",
+                     "winedbg", "crashpad_handle"}}
+        terminate_processes(helper, names)
+        deadline = time.monotonic() + 2
+        while (remaining := native_processes(helper.prefix)) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        if remaining:
+            raise HelperError("Worlds shutdown is incomplete. Still running: " +
+                              ", ".join(sorted(set(remaining.values()))))
+    elif failure:
+        # A failed command and an empty /proc view are not proof of success
+        # (for example, when procfs hides the real session).
+        raise failure
+    helper.emit("Worlds session fully stopped.")
 
 
 def stop(helper):
@@ -94,22 +201,48 @@ def stop(helper):
 
 def watch_session(helper, interval=2):
     server_pid = None
+    game_pids = None
+    quit_log = QuitLog(helper)
+    quitting = False
     while (helper.prefix / "system.reg").exists():
         native = native_processes(helper.prefix)
+        if not native:
+            return
         servers = {pid for pid, name in native.items() if name == "wineserver"}
-        if not servers or (server_pid is not None and server_pid not in servers):
-            return  # Never restart a stopped server or follow a new session.
+        if servers and server_pid is not None and server_pid not in servers:
+            return  # Never follow a new session.
         if server_pid is None:
+            if not servers:
+                return
             server_pid = next(iter(servers))
-        if not set(native.values()) & ACTIVE_APPS:
+        current_game = {pid for pid, name in native.items() if name == "msw.exe"}
+        if game_pids is not None and current_game and current_game != game_pids:
+            quit_log = QuitLog(helper)
+            quitting = False
+        game_pids = current_game
+        quitting |= quit_log.poll()
+        active = set(native.values()) & ACTIVE_APPS
+        if not servers or not active or (quitting and active <= {"msw.exe"}):
             try:
                 with helper.locked():
                     if not (helper.prefix / "system.reg").exists():
                         return
                     native = native_processes(helper.prefix)
-                    if native.get(server_pid) != "wineserver":
+                    current_servers = {pid for pid, name in native.items() if name == "wineserver"}
+                    if current_servers and server_pid not in current_servers:
                         return
-                    if set(native.values()) & ACTIVE_APPS:
+                    if not current_servers:
+                        # The observed server exited, but native browser/crash
+                        # handlers can survive it. Never start Wine to list them.
+                        if native:
+                            shutdown_prefix(helper)
+                        return
+                    active = set(native.values()) & ACTIVE_APPS
+                    if quitting and active <= {"msw.exe"} and {
+                            pid for pid, name in native.items() if name == "msw.exe"} <= game_pids:
+                        finish_quit(helper)
+                        return
+                    if active:
                         continue
                     # Recheck through Wine under the operation lock. A renamed
                     # Unix process or a simultaneous new launch must not be killed.
@@ -121,13 +254,14 @@ def watch_session(helper, interval=2):
                 pass
             except (HelperError, OSError, subprocess.SubprocessError) as exc:
                 helper.emit(f"Session cleanup will retry: {exc}")
-        time.sleep(interval)
+        quitting |= quit_log.wait(interval)
 
 
 def start_watcher(helper):
     # A separate process keeps cleanup working after the CLI or helper GUI exits.
     # It receives paths only, never a website URL or account ticket.
     env = os.environ.copy()
+    env.pop("WINEPREFIX", None)  # The watcher itself is outside Wine's session.
     source = str(Path(__file__).resolve().parent.parent)
     env["PYTHONPATH"] = source + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
     helper.logs.mkdir(parents=True, exist_ok=True)

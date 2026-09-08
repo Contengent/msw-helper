@@ -105,8 +105,53 @@ Normal Wine crash reporting remains enabled in the shipped configuration.
 A separate late crash was captured in Chromium 100's `cef_shutdown` call after
 the original graphics failure was fixed. Vuplex was then scoped to Windows 7
 compatibility mode, leaving Worlds on Windows 10. The follow-up test rendered
-successfully and the browser exited without a new shutdown dump. This is a
-tested compatibility setting, not a guarantee against every Chromium failure.
+successfully and the browser exited without a new shutdown dump. The user has
+since reported the Vuplex error again on quit with that setting active. The
+shutdown crash remains unresolved; the earlier clean exit did not establish a
+reliable workaround.
+
+### Recurrent quit crash: symbolized evidence
+
+The saved `.work/dxvk31-late-crash.mdmp` was analyzed using the official release
+symbols for CEF `100.0.24+g0783cf8+chromium-100.0.4896.127`, which is the version
+bundled with Worlds. The installed DLL and downloaded PDB have the same GUID
+`93CAF2FC-6732-F421-4C4C-44205044422E`, age 1. The symbols archive's SHA-1 matches
+the official build index: `41c8c62d6e799a87ca3f15eb27b9242929b3e0fe`.
+
+The significant frames are:
+
+```text
+libcef + 0x1530cec  content::RenderProcessHostImpl::Cleanup
+libcef + 0x152d260  content::RenderProcessHostImpl::DecrementKeepAliveRefCount
+libcef + 0x14700c0  content::KeepAliveHandleImpl::~KeepAliveHandleImpl
+libcef + 0x2fa814f  base::sequence_manager::internal::TaskQueueImpl::UnregisterTaskQueue
+libcef + 0x156611d  content::BrowserTaskQueues::~BrowserTaskQueues
+libcef + 0x2ea4e80  content::ContentMainRunnerImpl::Shutdown
+libcef + 0x3bd57cf  CefMainRunner::FinalizeShutdown
+libcef + 0x2ed7a07  CefContext::Shutdown
+libcef + 0x2ed78fe  CefShutdown
+```
+
+At the fault, `NotificationServiceImpl::current()` returned null and cleanup
+dereferenced it. This matches the shutdown-order failure described in
+[CEF issue 3276](https://github.com/chromiumembedded/cef/issues/3276).
+Its upstream correction drains pending UI/IO tasks before shutdown, but that
+correction is already present in the source for the bundled CEF version.
+Applying that patch again or changing the reported Windows version therefore
+is not an established fix for this recurrence.
+
+This is analysis of the saved earlier crash, not a fresh dump of the latest
+reported error. A diagnostic launch exited during loading without producing a
+dump; it did not test the fully initialized browser's quit path. Further live
+testing was deferred because the user started a session and asked to keep it
+open. Normal Wine crash reporting was restored before that session. No new
+browser binary or crash workaround has been deployed.
+
+The next useful test is a fully loaded desktop client, confirmation of its
+own Quit dialog, and capture of the resulting exception before background
+cleanup. A passing result must include absence of a new Vuplex exception,
+along with absence of remaining processes. Process cleanup alone does not
+establish a crash-free quit.
 
 The DXVK 3.1 archive digest was checked against its official GitHub release asset:
 `30f9cc326874be344285582275446968cfa4c069db31ce56df312d6644179154`.
@@ -152,7 +197,7 @@ failure or establish reliability across repeated launches.
 
 The session cleanup patch adds **Stop Worlds** / `./msw stop` and a detached
 watcher that cleans up the dedicated prefix after the game exits. The current
-59 unit tests pass, including background-browser cleanup, active-game protection,
+71 tests pass, including background-browser cleanup, active-game protection,
 operation locking, ownership checks, graceful stop and stuck-process fallback,
 unreadable process environments, retries after Wine errors, and refusing to
 follow a replacement Wine server. The desktop smoke test and
@@ -180,8 +225,39 @@ logged successful cleanup with zero remaining prefix processes. This verifies
 desktop client cleanup on this machine; it does not establish shutdown
 reliability from every authenticated world.
 
+The follow-up shutdown change watches new complete Unity log lines for
+`Input System module state changed to: ShutdownInProgress.` Both recent real
+Player logs contain that message after quitting. This allows cleanup to start
+even if `msw.exe` never exits: allow five seconds for normal game teardown,
+then stop the dedicated Wine server. Server commands have five-second deadlines,
+with a native fallback for surviving Wine, browser and crash-handler processes.
+Cleanup only reports success after checking for remaining prefix processes.
+It also handles native children that outlive the observed Wine server.
+
+Old log contents are ignored; log rotation and truncation are handled. The
+watcher rechecks game and server identities under the helper's operation lock,
+and preserves a replacement session or an active launcher/settings operation.
+Native fallback uses pidfds and rechecks exact prefix ownership before signalling.
+The added tests cover these cases and use actual Linux child processes to check
+that terminating a browser in the owned prefix preserves both the game and a
+browser in a different prefix. This bounds a stuck shutdown; it does not repair
+the bundled CEF shutdown bug described above.
+
+The disposable Wine smoke test freezes a real Windows test process with
+`SIGSTOP`, leaves a native browser fixture outside Wine's server, and appends
+the confirmed-quit log message. The detached watcher cleared both and all
+prefix services in **6.0 seconds**, while a browser fixture in another prefix
+stayed running. This exercises the actual server shutdown and native fallback.
+The test requires clang, lld-link and Wine's development import libraries.
+
+A subsequent real Worlds test reached its Quit dialog during loading. After
+the game accepted Quit, the new watcher logged `Worlds confirmed Quit` and
+`Worlds session fully stopped`; native inspection found zero remaining prefix
+processes. The test did not establish a crash-free quit of a fully loaded world.
+
 ```sh
 python3 -m unittest discover -s tests -v
+PYTHONPATH=. python3 tests/session_smoke.py
 PYTHONPATH=. python3 tests/gui_smoke.py
 PYTHONPATH=. python3 tests/desktop_smoke.py
 ./msw verify

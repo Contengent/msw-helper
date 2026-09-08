@@ -1,4 +1,6 @@
 from pathlib import Path
+import os
+import signal
 import subprocess
 import tempfile
 import unittest
@@ -7,7 +9,8 @@ from unittest.mock import patch
 from msw_helper.cli import main
 from msw_helper.core import Helper, HelperError, make_uri
 from msw_helper.maintenance import mark_installation
-from msw_helper.session import ACTIVE_APPS, native_processes, shutdown_prefix, watch_session
+from msw_helper.session import (ACTIVE_APPS, QUIT_MESSAGE, QuitLog, finish_quit,
+                                native_processes, shutdown_prefix, terminate_processes, watch_session)
 
 
 class SessionTests(unittest.TestCase):
@@ -19,6 +22,175 @@ class SessionTests(unittest.TestCase):
         mark_installation(self.helper)
         self.helper.prefix.mkdir()
         (self.helper.prefix / 'system.reg').touch()
+
+    def player_log(self, content=b'Initialized.\n'):
+        path = self.helper.prefix / 'drive_c/users/player/AppData/LocalLow/nexon/MapleStory Worlds/Player.log'
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+        return path
+
+    def test_quit_log_ignores_previous_quit_and_requires_a_complete_exact_line(self):
+        path = self.player_log(QUIT_MESSAGE + b'\n')
+        log = QuitLog(self.helper)
+        self.assertFalse(log.poll())
+        with path.open('ab') as stream:
+            stream.write(b'Quoted: ' + QUIT_MESSAGE + b'\n' + QUIT_MESSAGE[:20])
+        self.assertFalse(log.poll())
+        with path.open('ab') as stream:
+            stream.write(QUIT_MESSAGE[20:] + b'\r')
+        self.assertFalse(log.poll())
+        with path.open('ab') as stream:
+            stream.write(b'\n')
+        self.assertTrue(log.poll())
+        self.assertFalse(log.poll())
+
+    def test_quit_log_handles_creation_rotation_and_truncation(self):
+        log = QuitLog(self.helper)
+        path = self.player_log(QUIT_MESSAGE + b'\n')
+        self.assertTrue(log.poll())
+        path.rename(path.with_name('Player-prev.log'))
+        path.write_bytes(QUIT_MESSAGE + b'\n' + b'x' * 500)
+        self.assertTrue(log.poll())
+        path.write_bytes(QUIT_MESSAGE + b'\n')
+        self.assertTrue(log.poll())
+
+    def test_confirmed_quit_bounds_a_stuck_game_before_prefix_cleanup(self):
+        with patch('msw_helper.session.native_processes', return_value={11: 'msw.exe'}), \
+                patch('msw_helper.session.time.monotonic', side_effect=[0, 6]), \
+                patch('msw_helper.session.shutdown_prefix') as shutdown:
+            finish_quit(self.helper)
+        shutdown.assert_called_once_with(self.helper)
+
+    def test_watcher_detects_quit_while_game_is_still_running(self):
+        path = self.player_log()
+        def quit_now(*args):
+            with path.open('ab') as stream:
+                stream.write(QUIT_MESSAGE + b'\n')
+            return False
+        active = {10: 'wineserver', 11: 'msw.exe', 12: 'vuplex webview.vuplex'}
+        with patch('msw_helper.session.native_processes', return_value=active), \
+                patch('msw_helper.session.QuitLog.wait', side_effect=quit_now), \
+                patch('msw_helper.session.finish_quit') as finish:
+            watch_session(self.helper)
+        finish.assert_called_once_with(self.helper)
+
+    def test_watcher_does_not_treat_old_quit_or_cancel_as_confirmation(self):
+        for content in (QUIT_MESSAGE + b'\n', b'Quit\nCancel\n'):
+            self.player_log(content)
+            with self.subTest(content=content), \
+                    patch('msw_helper.session.native_processes',
+                          side_effect=[{10: 'wineserver', 11: 'msw.exe'}, {}]), \
+                    patch('msw_helper.session.QuitLog.wait', return_value=False), \
+                    patch('msw_helper.session.finish_quit') as finish, \
+                    patch('msw_helper.session.shutdown_prefix') as shutdown:
+                watch_session(self.helper)
+                finish.assert_not_called()
+                shutdown.assert_not_called()
+
+    def test_quit_for_previous_game_cannot_stop_a_replacement(self):
+        path = self.player_log()
+        waits = []
+        def quit_once(*args):
+            if not waits:
+                with path.open('ab') as stream:
+                    stream.write(QUIT_MESSAGE + b'\n')
+            waits.append(True)
+            return False
+        active = {10: 'wineserver', 11: 'msw.exe'}
+        replacement = {10: 'wineserver', 20: 'msw.exe'}
+        with patch('msw_helper.session.native_processes',
+                   side_effect=[active, active, replacement, replacement, {}]), \
+                patch('msw_helper.session.QuitLog.wait', side_effect=quit_once), \
+                patch('msw_helper.session.finish_quit') as finish, \
+                patch('msw_helper.session.shutdown_prefix') as shutdown:
+            watch_session(self.helper)
+        finish.assert_not_called()
+        shutdown.assert_not_called()
+
+    def test_confirmed_quit_preserves_other_active_apps_and_operations(self):
+        for name in ACTIVE_APPS - {'msw.exe'}:
+            active = {10: 'wineserver', 11: 'msw.exe', 12: name}
+            with self.subTest(name=name), \
+                    patch('msw_helper.session.native_processes', side_effect=[active, {}]), \
+                    patch('msw_helper.session.QuitLog.poll', return_value=True), \
+                    patch('msw_helper.session.QuitLog.wait', return_value=False), \
+                    patch('msw_helper.session.finish_quit') as finish:
+                watch_session(self.helper)
+                finish.assert_not_called()
+        with self.helper.locked(), \
+                patch('msw_helper.session.native_processes',
+                      side_effect=[{10: 'wineserver', 11: 'msw.exe'}, {}]), \
+                patch('msw_helper.session.QuitLog.poll', return_value=True), \
+                patch('msw_helper.session.QuitLog.wait', return_value=False), \
+                patch('msw_helper.session.finish_quit') as finish:
+            watch_session(self.helper)
+            finish.assert_not_called()
+
+    def test_watcher_cleans_orphans_after_its_wine_server_exits(self):
+        active = {10: 'wineserver', 11: 'msw.exe'}
+        orphan = {12: 'vuplex webview.vuplex'}
+        with patch('msw_helper.session.native_processes', side_effect=[active, orphan, orphan]), \
+                patch('msw_helper.session.QuitLog.wait', return_value=False), \
+                patch.object(self.helper, 'processes') as wine, \
+                patch('msw_helper.session.shutdown_prefix') as shutdown:
+            watch_session(self.helper)
+        shutdown.assert_called_once_with(self.helper)
+        wine.assert_not_called()
+
+    def test_native_termination_rechecks_pid_before_signalling(self):
+        for replacement in ({}, {11: 'unrelated.exe'}):
+            with self.subTest(replacement=replacement), \
+                    patch('msw_helper.session.native_processes',
+                          side_effect=[{11: 'msw.exe'}, replacement]), \
+                    patch('msw_helper.session.os.pidfd_open', return_value=99), \
+                    patch('msw_helper.session.os.close') as close, \
+                    patch('msw_helper.session.signal.pidfd_send_signal') as kill:
+                terminate_processes(self.helper, {'msw.exe'})
+                kill.assert_not_called()
+                close.assert_called_once_with(99)
+
+    def test_native_termination_kills_only_selected_processes_in_owned_prefix(self):
+        # Real child processes exercise /proc, prefix isolation and pidfds.
+        children = []
+        try:
+            for prefix, name in ((self.helper.prefix, 'msw.exe'),
+                                 (self.helper.prefix, 'Vuplex WebView.vuplex'),
+                                 (self.root / 'other-prefix', 'Vuplex WebView.vuplex')):
+                # exec with the desired argv[0], without a shell or user input.
+                child = subprocess.Popen([name, '30'], executable='/usr/bin/sleep',
+                                         env=dict(os.environ, WINEPREFIX=str(prefix)))
+                children.append(child)
+            terminate_processes(self.helper, {'vuplex webview.vuplex'})
+            self.assertEqual(children[1].wait(timeout=5), -signal.SIGKILL)
+            self.assertIsNone(children[0].poll())
+            self.assertIsNone(children[2].poll())
+        finally:
+            for child in children:
+                if child.poll() is None:
+                    child.kill()
+                child.wait(timeout=5)
+
+    def test_shutdown_verifies_and_clears_processes_even_when_wineserver_times_out(self):
+        for error in (None, subprocess.TimeoutExpired('wineserver', 5)):
+            with self.subTest(error=error), \
+                    patch('msw_helper.session.shutil.which', return_value='/test/wine'), \
+                    patch('msw_helper.session.Path.is_file', return_value=True), \
+                    patch('msw_helper.session.subprocess.run', side_effect=error), \
+                    patch('msw_helper.session.native_processes',
+                          side_effect=[{10: 'wineserver', 12: 'vuplex webview.vuplex'}, {}]), \
+                    patch('msw_helper.session.terminate_processes') as terminate:
+                shutdown_prefix(self.helper)
+                terminate.assert_called_once_with(self.helper, {'wineserver', 'vuplex webview.vuplex'})
+
+    def test_shutdown_does_not_report_success_with_surviving_processes(self):
+        with patch('msw_helper.session.shutil.which', return_value='/test/wine'), \
+                patch('msw_helper.session.Path.is_file', return_value=True), \
+                patch('msw_helper.session.subprocess.run'), \
+                patch('msw_helper.session.native_processes', return_value={12: 'vuplex webview.vuplex'}), \
+                patch('msw_helper.session.terminate_processes'), \
+                patch('msw_helper.session.time.monotonic', side_effect=[0, 3]):
+            with self.assertRaisesRegex(HelperError, 'shutdown is incomplete'):
+                shutdown_prefix(self.helper)
 
     def test_native_scan_scopes_prefix_and_recognizes_renamed_chromium(self):
         proc = self.root / 'proc'

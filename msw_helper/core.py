@@ -410,8 +410,9 @@ class Helper:
             for app in ("msw.exe", "Vuplex WebView.vuplex"):
                 self.reg(r"HKCU\Software\Wine\AppDefaults" + "\\" + app + r"\DllOverrides",
                          name[:-4], "native,builtin")
-        # The bundled Chromium 100 also hit a separate cef_shutdown crash in
-        # Win10 mode. Scope compatibility to the browser; Worlds stays on Win10.
+        # Retain the browser's tested compatibility setting; Worlds stays on
+        # Win10. This does not reliably prevent its separate CEF shutdown crash
+        # (see docs/validation.md).
         self.reg(r"HKCU\Software\Wine\AppDefaults\Vuplex WebView.vuplex", "Version", "win7")
 
     def setup_webview(self):

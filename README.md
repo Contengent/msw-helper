@@ -31,10 +31,15 @@ pin them to your taskbar.
 To update the game or fix missing files, close Worlds and click
 **Update / repair**. The client opens again when the check finishes.
 
-After a game launched through the helper closes, the helper automatically stops
-its remaining Wine background processes. If Worlds gets stuck or the helper
-still reports it running, click **Stop Worlds** to close it and clean up its
-dedicated Wine prefix.
+When Worlds accepts Quit, the helper gives it five seconds to finish, then
+stops its remaining game, browser, and Wine processes and checks that they
+have exited. Closing the game window still requires confirming the game's
+Quit dialog. If Worlds gets stuck before accepting Quit, click **Stop Worlds**
+to close it and clean up its dedicated Wine prefix.
+
+Vuplex can still show an error during quit. The shutdown timeout clears stuck
+processes; that browser crash remains under investigation. See the
+[validation notes](docs/validation.md#recurrent-quit-crash-symbolized-evidence).
 
 If you prefer the terminal:
 
