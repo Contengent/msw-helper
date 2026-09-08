@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=MapleStory Worlds Helper
+Comment=Install, update, repair or uninstall MapleStory Worlds
+Exec=@COMMAND@ gui
+Icon=@ICON@
+Categories=Game;
+Terminal=false
+StartupWMClass=Msw-helper-wine
+X-MSW-DataDir=@DATA_DIR@

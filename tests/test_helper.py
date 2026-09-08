@@ -11,9 +11,9 @@ import threading
 import unittest
 from unittest.mock import patch
 
-from msw_helper.cli import parser
+from msw_helper.cli import main, parser
 from msw_helper.core import (Cancelled, DXVK_DLLS, DXVK_URL, DXVK_VERSION, Helper, HelperError, MANIFEST, REQUIRED_DATA,
-                             REQUIRED_PE, make_uri, official_url, redact, validate_uri)
+                             REQUIRED_PE, WEBSITE, make_uri, official_url, redact, validate_uri)
 from msw_helper.desktop import exec_argument
 
 
@@ -35,6 +35,8 @@ class HelperTests(unittest.TestCase):
         self.helper = Helper(self.root, emit=lambda _: None)
 
     def client(self):
+        from msw_helper.maintenance import mark_installation
+        mark_installation(self.helper)
         for name in REQUIRED_PE:
             pe(self.helper.game_dir / name)
         for name in (*REQUIRED_DATA, MANIFEST):
@@ -254,6 +256,26 @@ class HelperTests(unittest.TestCase):
             with patch.object(self.helper, "require_wine"), patch.object(self.helper, "register_game"), patch.object(self.helper, "ngm") as launch:
                 self.helper.open_uri(uri)
                 launch.assert_called_once_with(uri)
+
+    def test_play_launches_installed_client_through_ngm_without_browser(self):
+        self.client()
+        with patch("msw_helper.cli.Helper", return_value=self.helper), \
+                patch("msw_helper.cli.webbrowser.open") as browser, \
+                patch.object(self.helper, "require_wine"), \
+                patch.object(self.helper, "register_game"), \
+                patch.object(self.helper, "ngm") as launch, \
+                patch("msw_helper.core.time.time", return_value=123):
+            self.assertEqual(main(["play"]), 0)
+            launch.assert_called_once_with(make_uri("launch"))
+            browser.assert_not_called()
+
+    def test_website_is_a_separate_browser_action(self):
+        with patch("msw_helper.cli.Helper", return_value=self.helper), \
+                patch.object(self.helper, "play") as launch, \
+                patch("msw_helper.cli.webbrowser.open", return_value=True) as browser:
+            self.assertEqual(main(["website"]), 0)
+            browser.assert_called_once_with(WEBSITE)
+            launch.assert_not_called()
 
     def test_unrelated_and_malformed_links_rejected(self):
         for uri in ("https://example.com", "ngm://launch/ -game:'65538'", "ngm://launch/",

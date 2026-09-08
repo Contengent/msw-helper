@@ -1,0 +1,15 @@
+[Desktop Entry]
+Type=Application
+Name=MapleStory Worlds (Wine)
+Comment=Play MapleStory Worlds
+Exec=@COMMAND@ play
+Icon=@ICON@
+Categories=Game;
+Terminal=false
+StartupWMClass=msw.exe
+Actions=Manage;
+X-MSW-DataDir=@DATA_DIR@
+
+[Desktop Action Manage]
+Name=Manage installation
+Exec=@COMMAND@ gui

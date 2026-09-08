@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=MapleStory Worlds website links
+Exec=@COMMAND@ open %u
+Icon=@ICON@
+Terminal=false
+NoDisplay=true
+MimeType=x-scheme-handler/ngm;
+X-MSW-DataDir=@DATA_DIR@

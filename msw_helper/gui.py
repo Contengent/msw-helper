@@ -17,6 +17,9 @@ class Application:
         self.busy = False
         helper.emit = lambda text: self.events.put(("log", text))
         root.title("MapleStory Worlds · Wine Helper")
+        from .desktop import ICON_NAME, RESOURCES
+        self.icon = tk.PhotoImage(master=root, file=str(RESOURCES / ICON_NAME))
+        root.iconphoto(True, self.icon)
         root.geometry("800x590")
         root.minsize(800, 590)
         root.configure(background="#f5f3ee")
@@ -30,7 +33,7 @@ class Application:
         frame = ttk.Frame(root, padding=24)
         frame.pack(fill="both", expand=True)
         ttk.Label(frame, text="MapleStory Worlds", style="Title.TLabel").pack(anchor="w")
-        ttk.Label(frame, text="Install once. Keep Worlds current. Play from your browser.",
+        ttk.Label(frame, text="Install, update, and launch MapleStory Worlds.",
                   font=("sans-serif", 11)).pack(anchor="w", pady=(6, 18))
         self.status = tk.StringVar()
         ttk.Label(frame, textvariable=self.status, font=("sans-serif", 12, "bold")).pack(anchor="w")
@@ -40,14 +43,15 @@ class Application:
         actions.pack(fill="x")
         self.buttons = {}
         for name, label, command in (
+                ("play", "Play Worlds", self.play),
                 ("install", "Install Worlds", self.install),
                 ("update", "Update / repair", lambda: self.start("Updating Worlds…", helper.update)),
-                ("play", "Play on website", self.play)):
+                ("website", "Website", self.website)):
             button = ttk.Button(actions, text=label, command=command,
                                 style="Play.TButton" if name == "play" else "TButton")
             button.pack(side="left", padx=(0, 8))
             self.buttons[name] = button
-        ttk.Label(frame, text="Sign in on the website and choose a world. Allow it to open the Worlds link.\n"
+        ttk.Label(frame, text="Play Worlds opens the desktop client. Website opens your browser.\n"
                   "Update / repair opens the client when Nexon finishes checking files.",
                   wraplength=730).pack(anchor="w", pady=(12, 16))
         tools = ttk.Frame(frame)
@@ -55,15 +59,19 @@ class Application:
         for name, label, command in (
                 ("verify", "Verify files", self.verify),
                 ("register", "Register website links", self.register),
-                ("winecfg", "Wine settings", lambda: self.start("Wine settings…", lambda: helper.run(["winecfg"], timeout=None))),
+                ("winecfg", "Wine settings", lambda: self.start("Wine settings…", helper.winecfg)),
                 ("logs", "Open logs", self.logs)):
             button = ttk.Button(tools, text=label, command=command)
             button.pack(side="left", padx=(0, 6))
             self.buttons[name] = button
         self.progress = ttk.Progressbar(frame, mode="indeterminate")
         self.progress.pack(fill="x", pady=(18, 8))
-        self.cancel_button = ttk.Button(frame, text="Cancel operation", command=helper.cancel.set, state="disabled")
-        self.cancel_button.pack(side="bottom", anchor="e", pady=(10, 0))
+        footer = ttk.Frame(frame)
+        footer.pack(side="bottom", fill="x", pady=(10, 0))
+        self.buttons["uninstall"] = ttk.Button(footer, text="Uninstall…", command=self.uninstall)
+        self.buttons["uninstall"].pack(side="left")
+        self.cancel_button = ttk.Button(footer, text="Cancel operation", command=helper.cancel.set, state="disabled")
+        self.cancel_button.pack(side="right")
         self.output = ScrolledText(frame, height=10, wrap="word", font=("monospace", 10),
                                    background="#fffefa", foreground="#252a32", relief="flat", padx=12, pady=10)
         self.output.pack(fill="both", expand=True)
@@ -86,7 +94,7 @@ class Application:
                         "Worlds files need repair" if repairable else "Worlds is not installed yet")
         self.buttons["update"].configure(state="normal" if repairable else "disabled")
 
-    def start(self, label, operation):
+    def start(self, label, operation, *, cancellable=True, completion="done"):
         if self.busy:
             return
         self.busy = True
@@ -95,7 +103,7 @@ class Application:
         self.append(label)
         for button in self.buttons.values():
             button.configure(state="disabled")
-        self.cancel_button.configure(state="normal")
+        self.cancel_button.configure(state="normal" if cancellable else "disabled")
         self.progress.start(12)
         def worker():
             try:
@@ -103,7 +111,7 @@ class Application:
             except Exception as exc:
                 self.events.put(("cancelled" if isinstance(exc, Cancelled) else "error", str(exc)))
             else:
-                self.events.put(("done", "Operation completed."))
+                self.events.put((completion, "Operation completed."))
         threading.Thread(target=worker, daemon=True).start()
 
     def install(self):
@@ -117,6 +125,14 @@ class Application:
         from .desktop import register
         self.start("Registering website links…", lambda: register(self.helper))
 
+    def uninstall(self):
+        from tkinter import messagebox
+        if messagebox.askyesno("Uninstall MapleStory Worlds",
+                "Remove Worlds, its Wine prefix, local settings, downloads, and desktop entries?\n\n"
+                + str(self.helper.home), parent=self.root, default="no"):
+            self.start("Uninstalling Worlds…", self.helper.uninstall,
+                       cancellable=False, completion="uninstalled")
+
     def verify(self):
         report = self.helper.verify()
         if report["installed"]:
@@ -126,17 +142,22 @@ class Application:
         self.append("Nexon launcher: " + ("ready" if report["ngm"] else "missing") +
                     ". WebView2: " + ("ready." if report["webview2"] else "missing."))
         self.append("Graphics: " + ("ready." if report["dxvk"] else
-                    "DXVK will be installed on the next install, repair, or website launch."))
+                    "DXVK will be installed on the next install, repair, or launch."))
         self.refresh()
 
     def play(self):
+        self.start("Starting Worlds…", self.helper.play)
+
+    def website(self):
         if webbrowser.open(WEBSITE):
             self.append("Sign in and click Play on the Worlds website.")
         else:
             self.append(f"Open {WEBSITE} in your browser.")
 
     def logs(self):
-        self.helper.logs.mkdir(parents=True, exist_ok=True)
+        if not self.helper.logs.is_dir():
+            self.append("No logs yet. Install or launch Worlds to create them.")
+            return
         try:
             subprocess.Popen(["xdg-open", str(self.helper.logs)], stdout=subprocess.DEVNULL,
                              stderr=subprocess.DEVNULL)
@@ -159,6 +180,10 @@ class Application:
                     if kind == "error":
                         self.status.set("Operation failed — see details below")
                         messagebox.showerror("MapleStory Worlds", message, parent=self.root)
+                    elif kind == "uninstalled":
+                        messagebox.showinfo("MapleStory Worlds", "Worlds has been uninstalled.", parent=self.root)
+                        self.close()
+                        return
         except queue.Empty:
             pass
         self.timer = self.root.after(100, self.poll)
@@ -178,6 +203,7 @@ def run_gui(helper):
     except ImportError as exc:
         from .core import HelperError
         raise HelperError("The GUI needs Python Tk: install python3-tk (Debian/Ubuntu) or tk (Arch).") from exc
-    root = tk.Tk()
+    from .desktop import GUI_CLASS
+    root = tk.Tk(className=GUI_CLASS)
     Application(root, helper)
     root.mainloop()

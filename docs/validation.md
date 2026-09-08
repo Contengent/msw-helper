@@ -75,8 +75,9 @@ and component revision/cache invalidation were tested.
 
 The automated test launches did not carry a Nexon account ticket. The user later
 reported successfully entering a world and playing during the initial testing,
-followed by a world-entry regression described below. Automated file, GUI, and
-protocol checks do not establish a working security session or in-world gameplay.
+followed by a world-entry regression and a successful retest described below.
+The latest confirmation comes from the user's actual world entry; automated
+file, GUI, and protocol checks alone do not establish in-world gameplay.
 
 ## Vuplex crash correction
 
@@ -124,7 +125,8 @@ The audit found background Wine services left in both development prefixes and
 an unnecessarily broad graphics override. The helper now enables DXVK only for
 `msw.exe` and `Vuplex WebView.vuplex`; other processes use Wine's builtin graphics.
 All helper-created test-prefix services were stopped, and the idle main prefix
-was restarted for a clean, single-instance website launch.
+was prepared for a clean launch. The helper's primary Play Worlds button and
+`./msw play` now launch the desktop client through NGM.
 
 Nexon's official NGS installer was also run using the game metadata's arguments
 (`install -download -gid 2037 -name MapleStoryWorlds`). The installed `NGService.exe`
@@ -137,8 +139,14 @@ are encoded and were not interpreted as plaintext error reports.
 Security service SHA-256 observed before and after the installer:
 `1f067171a7e0a4ac864b8f8a63e6f30a5833187bd7fdb839da729b7ae670e3a4`.
 
-The same-world retest after cleanup remains pending. Do not describe this
-regression as fixed until a world can be entered again.
+On 2026-09-07, after the cleanup and desktop launch changes, the user confirmed
+successful world entry again. Their screenshot shows **Old School Maple** at
+its world/channel selection screen. Error 201 did not block this attempt.
+
+This establishes a successful retest with the current configuration. Because
+the service cleanup, scoped graphics overrides, official NGS installer run, and
+fresh launch preceded that retest, it does not isolate which change cleared the
+failure or establish reliability across repeated launches.
 
 ## Repeatable checks
 
@@ -149,7 +157,61 @@ PYTHONPATH=. python3 tests/desktop_smoke.py
 ./msw verify
 ```
 
-The 20 unit tests and both desktop/GUI smoke tests passed locally. GitHub Actions
-is configured to run them with Python 3.11 and Xvfb; remote CI has not been run.
+The 40 unit tests and both desktop/GUI smoke tests passed locally. The launch
+control change was checked with the real Tk smoke test: Play Worlds dispatches
+the client launch on its worker, while Website opens the browser separately.
+`./msw play` was also run against the main installation and opened the actual
+MapleStory Worlds window. That check does not establish successful world entry.
+GitHub Actions is configured to run them with Python 3.11 and Xvfb; remote CI has
+not been run.
 The tests do not need a Nexon account or download game content. `verify` is a
 basic core-file/completion check; NGM's restore operation performs content repair.
+
+## Installer, window tracking, and uninstall
+
+The existing per-user installer now records installation ownership and installs
+three desktop templates from `msw_helper/resources/`, plus the Worlds PNG icon:
+the primary game entry, a separate helper GUI entry, and the hidden protocol
+handler. `desktop-state.json` records installed file hashes and the previous
+protocol handler. The installed copy includes the resources and can run after
+the checkout moves.
+
+The running **MapleStory Worlds-Old School Maple** window was inspected with
+`xprop` and reported `WM_CLASS(STRING) = "msw.exe", "msw.exe"`, matching the game
+entry's `StartupWMClass`. The helper uses Tk class `Msw-helper-wine`, matching its
+separate entry. Actual installed desktop files passed `desktop-file-validate`.
+The icon is referenced by absolute path because this machine's existing shared
+icon cache failed validation when rebuilt; installing the helper does not
+require modifying that cache.
+
+The GUI-only entry is **MapleStory Worlds Helper**. Its desktop icon and the
+GUI's `_NET_WM_ICON` use the original 256×256 application artwork extracted
+from `msw.exe`, replacing the initial placeholder. Re-registration removes the
+old SVG only when it still matches the recorded installation hash.
+
+`tests/desktop_smoke.py` registered a disposable installation with real XDG
+tools, dispatched each generated entry with GLib, and verified game/helper
+commands and unchanged protocol arguments. It then ran the **installed helper's
+own uninstall command**, removed the disposable files and desktop entries, and
+confirmed that the previous protocol handler was restored. The real game
+installation was retained.
+
+Unit tests cover modified desktop files, a newer prefix taking over the menu
+entries, later user changes to the default handler, missing desktop files,
+unrelated files, Wine drive symlinks, ownership validation, and refusal to
+remove an active client. Wine shutdown is checked for the matching wineserver
+and the dedicated `WINEPREFIX`; full real-game removal was not performed.
+The Tk smoke test verifies both declining and accepting uninstall with a mocked
+backend, disables cancellation during removal, and closes the GUI on success.
+
+The readiness review also checked ownership before installation and desktop
+registration. Existing untracked prefix, cache, log, or helper directories now
+cause an actionable error instead of silently becoming uninstall targets.
+Recorded legacy installs can still migrate. Wine settings takes the operation
+lock and records ownership before creating a prefix, including before the game
+has been installed. EOF at the CLI uninstall prompt cancels removal.
+
+Remaining release validation: repeated clean launches into a world after the
+error-201 recovery, a full installation/update/removal cycle on another machine,
+and the configured Python 3.11 GitHub Actions run. The current evidence supports
+an initial testing release on the recorded configuration.

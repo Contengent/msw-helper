@@ -20,8 +20,11 @@ Vulkan 1.4). A current Wine Staging build is a suitable starting
 point; see [validation](docs/validation.md) for the version actually tested.
 
 ```sh
-# Graphical installer
+# Open the helper GUI; Play Worlds launches the desktop client
 ./msw
+
+# Launch the Worlds desktop client directly
+./msw play
 
 # Or install everything, including desktop integration
 ./install.sh
@@ -32,18 +35,27 @@ point; see [validation](docs/validation.md) for the version actually tested.
 # Check for updates and repair files (Nexon opens the client afterward)
 ./msw update
 
-# Sign in and select a world in your normal Linux browser
-./msw play
+# Optional: open the official website in your normal Linux browser
+./msw website
+
+# Preview removal, or uninstall with confirmation
+./msw uninstall --dry-run
+./uninstall.sh
 ```
 
 Tk is packaged as `tk` on Arch Linux and `python3-tk` on Debian/Ubuntu. Wine and
 desktop dependencies should be installed using your distribution's package
 manager. The helper uses your installed Wine and does not change system packages.
 
+The GUI's primary **Play Worlds** button and `./msw play` launch the installed
+desktop client through Nexon Game Manager. Use **Website** or `./msw website`
+when you want to browse the website instead.
+
 ## Website launch
 
-Installation registers **MapleStory Worlds (Wine)** in your application menu and
-makes the helper the handler for `ngm://` links. Sign in on the
+Installation adds **MapleStory Worlds (Wine)** for direct game launch and
+**MapleStory Worlds Helper** for installation management to your application
+menu. It also makes the helper the handler for `ngm://` links. Sign in on the
 [official Worlds website](https://maplestoryworlds.nexon.com/en/play), choose a
 world, and allow the browser to open the external application.
 
@@ -80,6 +92,8 @@ Default data directory: `$XDG_DATA_HOME/msw-helper-wine`, normally
 | `logs/webview-bootstrap.log` | Microsoft runtime bootstrap diagnostics |
 | `state.json` | Last verified operation and installed patch-manifest hash |
 | `dxvk.json` | Installed graphics version and DLL integrity hashes |
+| `installation.json` | Ownership record for safe removal of the dedicated installation |
+| `desktop-state.json` | Installed desktop/icon paths and hashes, plus the previous `ngm://` handler |
 | `helper/` | Copy used by desktop entries, independent of the checkout location |
 
 ```sh
@@ -106,6 +120,11 @@ installed DLLs are also checked before launching. DXVK logs go in `logs/`.
 The bundled Vuplex browser uses Wine's Windows 7 compatibility mode; the game
 continues to use Windows 10.
 
+Choose an empty data directory for a new installation. The helper refuses to
+claim pre-existing prefix/cache/log/helper directories without its ownership
+record; this prevents a later uninstall from deleting unrelated data. Recorded
+installations from earlier helper versions are migrated automatically.
+
 ## Installation and updates
 
 1. Initialize a Wine prefix, suppressing optional Mono/Gecko first-run prompts.
@@ -123,9 +142,9 @@ continues to use Windows 10.
    registration under `HKCU\Software\Nexon\MOD` and install desktop integration.
 
 `update` uses NGM's **restore** flow, which checks/repairs game content and opens
-the client afterward. Website launches also use NGM so Nexon can patch before
-launching. `verify` checks the core binaries/data and completion manifest; it is
-not a replacement for Nexon's full content verification.
+the client afterward. Play Worlds and website launches also use NGM so Nexon can
+patch before launching. `verify` checks the core binaries/data and completion
+manifest; it is not a replacement for Nexon's full content verification.
 
 Close Worlds and Nexon's launcher before installing or updating. A per-prefix
 lock prevents concurrent helper operations. Downloads use temporary files and
@@ -134,15 +153,55 @@ stops the helper's current process; Nexon may already have spawned a separate
 window. Close that window before retrying. The helper never kills an entire Wine
 server or a newly launched game during normal operation.
 
+## Desktop integration and removal
+
+`./install.sh` is a per-user installer: it installs the actual game and a stable
+copy of the helper, then creates the menu entries, icon, and website handler.
+It requires no root access. Existing installations get the new entries and
+uninstaller with `./msw register-desktop`.
+
+The desktop templates and original Worlds application icon live in
+`msw_helper/resources/`. The GUI-only launcher is **MapleStory Worlds Helper**;
+its icon and the helper window icon use the artwork from Nexon's `msw.exe`.
+Generated entries are installed under `$XDG_DATA_HOME/applications`, normally
+`~/.local/share/applications`:
+
+| Desktop file | Action | Window class |
+| --- | --- | --- |
+| `msw-helper-wine.desktop` | Launch Worlds; includes a Manage installation action | `msw.exe` |
+| `msw-helper-wine-manager.desktop` | Open the helper GUI | `Msw-helper-wine` |
+| `msw-helper-wine-ngm.desktop` | Handle website links; hidden from menus | — |
+
+The game and helper entries set
+[`StartupWMClass`](https://specifications.freedesktop.org/desktop-entry/latest/recognized-keys.html)
+so the desktop can associate each running window with its launcher. The icon
+uses its installed absolute path and does not depend on a shared icon cache.
+
+Use **Uninstall…** in the helper GUI, `./uninstall.sh`, or `./msw uninstall`.
+The CLI shows the paths and asks for confirmation; `--dry-run` only lists them,
+and `--yes` supports unattended removal. Uninstall removes the dedicated Wine
+prefix, including game files and local settings, cached downloads, logs, and the
+installed helper copy. Close Worlds and Nexon's launcher first; the uninstaller
+then stops background services only in this prefix.
+
+Desktop files and the icon are removed only when they still match the recorded
+installation. Modified entries and another prefix's newer registration are
+preserved. The helper removes its own MIME association tokens and restores the
+previous `ngm://` handler when available, unless you have since selected another
+default. Unrelated files in the data directory and its small operation lock
+remain. The source checkout and system Wine installation are retained.
+
 ## Troubleshooting
 
 - **Security-module reset error 201 when entering a world:** close every Worlds
-  instance, including development/test copies, and launch again from the website.
+  instance, including development/test copies, and launch again with Play Worlds.
   This is a separate world-entry check; passing `verify` does not validate the
-  security session. A reported regression and the current investigation are
-  recorded in [validation](docs/validation.md#world-entry-regression-security-error-201).
+  security session. World entry into Old School Maple succeeded in the user's
+  retest on 2026-09-07; the specific cause remains unisolated. The changes and
+  successful retest are recorded in
+  [validation](docs/validation.md#world-entry-regression-security-error-201).
 - **Repeated “Vuplex WebView.vuplex” / Wine Debugger windows:** close Worlds and
-  launch it from the website again using the updated helper, or run Update /
+  launch it again with Play Worlds using the updated helper, or run Update /
   repair. The handler automatically installs DXVK 3.1 before launching. WineD3D
   fails Vuplex's `OpenSharedResource` call, and older DXVK 2.x builds do not support
   the current upstream Wine sharing path. This fixes the reproduced graphics
@@ -177,8 +236,11 @@ PYTHONPATH=. xvfb-run -a python3 tests/gui_smoke.py
 ```
 
 The tests cover incomplete installs, repair, failed update detection, download
-truncation and checksums, graphics migration, locking, protocol preservation, token redaction, and real Tk event
-delivery. They do not download a game or require a Nexon account.
+truncation and checksums, graphics migration, locking, protocol preservation,
+token redaction, real Tk controls, desktop registration, and uninstall ownership
+and association cleanup. The desktop smoke test installs and removes a disposable
+helper copy using actual XDG tools. Tests do not download a game or require a
+Nexon account.
 
 Inspired by the approach in the author's `pso_wine` project. Publisher endpoints
 and launch parameters were checked against the

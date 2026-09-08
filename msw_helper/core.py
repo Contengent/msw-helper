@@ -312,6 +312,8 @@ class Helper:
 
     def setup_prefix(self):
         self.require_wine()
+        from .maintenance import mark_installation
+        mark_installation(self)
         self.prefix.mkdir(parents=True, exist_ok=True)
         if not (self.prefix / "system.reg").exists():
             self.emit("Creating a dedicated 64-bit Wine prefix…")
@@ -528,9 +530,9 @@ class Helper:
     def ensure_idle(self):
         if not (self.prefix / "system.reg").exists():
             return
-        busy = self.processes() & {"msw.exe", "ngm.exe", "ngm64.exe", "nexonlauncher64.exe"}
+        busy = self.processes() & {"msw.exe", "ngm.exe", "ngm64.exe", "nexonlauncher64.exe", "vuplex webview.vuplex"}
         if busy:
-            raise HelperError("Close Worlds and Nexon's launcher before installing or updating.")
+            raise HelperError("Close Worlds and Nexon's launcher before changing the installation.")
 
     def verify(self) -> dict:
         missing = []
@@ -573,6 +575,8 @@ class Helper:
     def install(self):
         with self.locked():
             self.require_wine()
+            from .maintenance import mark_installation
+            mark_installation(self)
             self.ensure_idle()
             self.setup_prefix()
             info = self.metadata(GAME_INFO)
@@ -606,9 +610,11 @@ class Helper:
     def update(self):
         with self.locked():
             self.require_wine()
-            self.ensure_idle()
             if not self.game_dir.is_dir():
                 raise HelperError("Worlds is not installed yet. Run Install first.")
+            from .maintenance import mark_installation
+            mark_installation(self)
+            self.ensure_idle()
             # Missing/corrupt client files are exactly what restore must repair.
             self.register_game(complete=False)
             self.setup_webview()
@@ -625,15 +631,33 @@ class Helper:
         if before == after and "msw.exe" not in self.processes():
             raise HelperError("Nexon exited, but a completed update could not be confirmed. Retry Update / repair.")
 
+    def play(self):
+        """Launch the desktop client through Nexon's normal patch/launch flow."""
+        self.open_uri(make_uri("launch"))
+
+    def uninstall(self):
+        from .maintenance import uninstall
+        uninstall(self)
+
+    def winecfg(self):
+        with self.locked():
+            self.require_wine()
+            from .maintenance import mark_installation
+            mark_installation(self)
+            self.ensure_idle()
+            if not (self.prefix / "system.reg").exists():
+                self.setup_prefix()
+            self.run(["winecfg"], timeout=None, label="Wine settings")
+
     def open_uri(self, uri):
         validate_uri(uri)
         with self.locked():
             self.require_wine()
             if not self.verify()["installed"]:
-                raise HelperError("Install MapleStory Worlds from the helper first, then click Play on the website again.")
+                raise HelperError("Install MapleStory Worlds from the helper first, then retry Play Worlds.")
             # Do not replace or persist a browser's short-lived login token.
             self.register_game()
-            self.emit("Opening the website's Worlds link in Wine…")
+            self.emit("Starting MapleStory Worlds…")
             self.ngm(uri)
 
     def doctor(self):
