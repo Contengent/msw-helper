@@ -162,8 +162,6 @@ control change was checked with the real Tk smoke test: Play Worlds dispatches
 the client launch on its worker, while Website opens the browser separately.
 `./msw play` was also run against the main installation and opened the actual
 MapleStory Worlds window. That check does not establish successful world entry.
-GitHub Actions is configured to run them with Python 3.11 and Xvfb; remote CI has
-not been run.
 The tests do not need a Nexon account or download game content. `verify` is a
 basic core-file/completion check; NGM's restore operation performs content repair.
 
@@ -211,7 +209,6 @@ Recorded legacy installs can still migrate. Wine settings takes the operation
 lock and records ownership before creating a prefix, including before the game
 has been installed. EOF at the CLI uninstall prompt cancels removal.
 
-Remaining release validation: repeated clean launches into a world after the
-error-201 recovery, a full installation/update/removal cycle on another machine,
-and the configured Python 3.11 GitHub Actions run. The current evidence supports
-an initial testing release on the recorded configuration.
+Further testing can cover repeated clean launches into a world after the
+error-201 recovery and a full installation/update/removal cycle on another
+machine. The results above describe the configuration tested locally.
