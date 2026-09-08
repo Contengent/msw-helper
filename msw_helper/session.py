@@ -1,0 +1,166 @@
+"""Finish a Worlds session without touching another application's Wine prefix."""
+import argparse
+import fcntl
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+import time
+
+from .core import Helper, HelperError, OperationInProgress
+
+ACTIVE_APPS = {"msw.exe", "ngm.exe", "ngm64.exe", "nexonlauncher64.exe", "winecfg.exe", "regedit.exe"}
+BACKGROUND_APPS = {"vuplex webview.vuplex", "msedgewebview2.exe", "microsoftedgeupdate.exe"}
+
+
+def native_processes(prefix, proc_root=Path("/proc")):
+    """Read only this user's processes in this exact prefix; never expose args.
+
+    Chromium changes its Linux process name to CrBrowserMain/CrGpuMain, while
+    argv[0] still names Vuplex. A native check avoids starting Wine merely to
+    discover that it already stopped.
+    """
+    expected = ("WINEPREFIX=" + str(prefix)).encode()
+    result = {}
+    for process in proc_root.iterdir():
+        if not process.name.isdigit():
+            continue
+        try:
+            if process.stat().st_uid != os.getuid():
+                continue
+            if expected not in (process / "environ").read_bytes().split(b"\0"):
+                continue
+            image = (process / "cmdline").read_bytes().split(b"\0", 1)[0].decode(errors="replace")
+            image = image.replace("\\", "/").rsplit("/", 1)[-1].lower()
+            name = (process / "comm").read_text().strip().lower()
+            result[int(process.name)] = image if image.endswith((".exe", ".vuplex")) else name
+        except (FileNotFoundError, ProcessLookupError):
+            continue
+        except PermissionError:
+            # Same-user services such as ssh-agent can deliberately prohibit
+            # reading /proc/PID/environ. They must not disable game cleanup.
+            # The watcher also checks Wine's process list before stopping it.
+            continue
+    return result
+
+
+def shutdown_prefix(helper):
+    from .maintenance import validate_ownership
+    validate_ownership(helper)
+    wine = shutil.which(helper.wine)
+    if not wine:
+        raise HelperError("Wine is missing; cannot stop the Worlds prefix.")
+    candidates = (Path(wine).absolute().with_name("wineserver"), Path(wine).resolve().with_name("wineserver"))
+    server = next((path for path in candidates if path.is_file()), None)
+    if server is None:
+        raise HelperError(f"Cannot find the matching wineserver beside {wine}.")
+    helper.emit("Stopping Wine background services for Worlds…")
+    subprocess.run([str(server), "-k"], env=helper.env(), check=True, timeout=15)
+    subprocess.run([str(server), "-w"], env=helper.env(), check=True, timeout=30)
+
+
+def stop(helper):
+    with helper.locked():
+        if not (helper.prefix / "system.reg").exists():
+            helper.emit("Worlds is not running.")
+            return
+        from .maintenance import validate_ownership
+        validate_ownership(helper)
+        helper.require_wine()
+        try:
+            running = set(native_processes(helper.prefix).values()) & ACTIVE_APPS
+            if running:
+                helper.emit("Closing Worlds…")
+                # Post WM_CLOSE once for all apps, then give them a shared
+                # deadline. Do not repeatedly start tasklist while Wine exits.
+                args = ["taskkill"]
+                for name in sorted(running):
+                    args.extend(["/im", name])
+                helper.run(args, timeout=3, label="Closing Worlds", allowed=(0, 1, 128))
+                deadline = time.monotonic() + 8
+                while set(native_processes(helper.prefix).values()) & ACTIVE_APPS:
+                    if time.monotonic() >= deadline:
+                        helper.emit("Stopping the remaining stuck Worlds processes…")
+                        break
+                    time.sleep(0.2)
+        except (HelperError, OSError, subprocess.SubprocessError) as exc:
+            # An explicit stop still needs to finish when Wine's close command
+            # fails or hangs. Ownership was checked before attempting it.
+            helper.emit(f"Worlds did not close normally; stopping its Wine session: {exc}")
+        shutdown_prefix(helper)
+        helper.emit("Worlds and its background processes are stopped.")
+
+
+def watch_session(helper, interval=2):
+    server_pid = None
+    while (helper.prefix / "system.reg").exists():
+        native = native_processes(helper.prefix)
+        servers = {pid for pid, name in native.items() if name == "wineserver"}
+        if not servers or (server_pid is not None and server_pid not in servers):
+            return  # Never restart a stopped server or follow a new session.
+        if server_pid is None:
+            server_pid = next(iter(servers))
+        if not set(native.values()) & ACTIVE_APPS:
+            try:
+                with helper.locked():
+                    if not (helper.prefix / "system.reg").exists():
+                        return
+                    native = native_processes(helper.prefix)
+                    if native.get(server_pid) != "wineserver":
+                        return
+                    if set(native.values()) & ACTIVE_APPS:
+                        continue
+                    # Recheck through Wine under the operation lock. A renamed
+                    # Unix process or a simultaneous new launch must not be killed.
+                    if not helper.processes() & ACTIVE_APPS:
+                        helper.emit("Worlds closed. Cleaning up its background processes…")
+                        shutdown_prefix(helper)
+                        return
+            except OperationInProgress:
+                pass
+            except (HelperError, OSError, subprocess.SubprocessError) as exc:
+                helper.emit(f"Session cleanup will retry: {exc}")
+        time.sleep(interval)
+
+
+def start_watcher(helper):
+    # A separate process keeps cleanup working after the CLI or helper GUI exits.
+    # It receives paths only, never a website URL or account ticket.
+    env = os.environ.copy()
+    source = str(Path(__file__).resolve().parent.parent)
+    env["PYTHONPATH"] = source + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+    helper.logs.mkdir(parents=True, exist_ok=True)
+    path = helper.logs / "session.log"
+    with os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600), "a") as log:
+        subprocess.Popen([sys.executable, "-m", "msw_helper.session", "--data-dir", str(helper.home),
+                          "--wine", helper.wine], env=env, stdin=subprocess.DEVNULL,
+                         stdout=log, stderr=log, start_new_session=True)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--data-dir", type=Path, required=True)
+    parser.add_argument("--wine", required=True)
+    args = parser.parse_args()
+    helper = Helper(args.data_dir, args.wine)
+    if not (helper.prefix / "system.reg").exists():
+        return
+    try:
+        with (helper.home / "session.lock").open("a") as lock:
+            deadline = time.monotonic() + 5
+            while True:
+                try:
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if time.monotonic() >= deadline:
+                        return
+                    time.sleep(0.2)
+            watch_session(helper)
+    except (HelperError, OSError, subprocess.SubprocessError) as exc:
+        print(f"Session cleanup: {exc}", flush=True)
+
+
+if __name__ == "__main__":
+    main()

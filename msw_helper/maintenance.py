@@ -3,7 +3,6 @@ import hashlib
 import json
 from pathlib import Path
 import shutil
-import subprocess
 
 from .core import HelperError, atomic_json
 
@@ -88,13 +87,8 @@ def stop_prefix(helper):
         return
     helper.require_wine()
     helper.ensure_idle()
-    wine = Path(shutil.which(helper.wine)).resolve()
-    server = wine.with_name("wineserver")
-    if not server.is_file():
-        raise HelperError(f"Cannot find the matching wineserver beside {wine}. Close the prefix before uninstalling.")
-    helper.emit("Stopping background Wine services in the Worlds prefix…")
-    subprocess.run([str(server), "-k"], env=helper.env(), check=True, timeout=15)
-    subprocess.run([str(server), "-w"], env=helper.env(), check=True, timeout=30)
+    from .session import shutdown_prefix
+    shutdown_prefix(helper)
 
 
 def uninstall(helper):

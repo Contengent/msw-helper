@@ -150,6 +150,36 @@ failure or establish reliability across repeated launches.
 
 ## Repeatable checks
 
+The session cleanup patch adds **Stop Worlds** / `./msw stop` and a detached
+watcher that cleans up the dedicated prefix after the game exits. The current
+59 unit tests pass, including background-browser cleanup, active-game protection,
+operation locking, ownership checks, graceful stop and stuck-process fallback,
+unreadable process environments, retries after Wine errors, and refusing to
+follow a replacement Wine server. The desktop smoke test and
+real Tk smoke test also pass; the Tk check exercises the Stop Worlds button
+with a mocked backend.
+
+The user's follow-up about hanging after quitting the game exposed a live
+watcher failure: `session.log` recorded `Cannot inspect Wine processes for
+automatic cleanup.` Same-user desktop services, including `systemd` and
+`ssh-agent`, prohibit reading their process environments. The watcher now skips
+those unrelated processes and still confirms the active apps through Wine
+before stopping the dedicated prefix. Transient Wine-check and shutdown errors
+are retried. Explicit Stop Worlds also proceeds to prefix shutdown if its
+graceful close command fails or times out, and uses native polling while the
+game exits instead of repeatedly starting Wine's `tasklist`.
+
+The corrected watcher stopped all 11 processes left in the actual closed
+Worlds session, including Wine services, Edge's updater, and its crash handler.
+A fresh actual game launch followed by a normal window-close request completed
+with zero remaining prefix processes after 10.2 seconds. A second test through
+the updated installed helper reached the game's own Quit / Cancel dialog;
+the initial close request alone did not exit it. The window subsequently closed
+before the automated confirmation click, and the installed watcher again
+logged successful cleanup with zero remaining prefix processes. This verifies
+desktop client cleanup on this machine; it does not establish shutdown
+reliability from every authenticated world.
+
 ```sh
 python3 -m unittest discover -s tests -v
 PYTHONPATH=. python3 tests/gui_smoke.py

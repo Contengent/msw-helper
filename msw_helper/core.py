@@ -46,6 +46,10 @@ class HelperError(Exception):
     """An actionable failure, suitable for display in the GUI."""
 
 
+class OperationInProgress(HelperError):
+    pass
+
+
 class Cancelled(HelperError):
     pass
 
@@ -161,7 +165,7 @@ class Helper:
             try:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError as exc:
-                raise HelperError("Another install, update, or launch is in progress.") from exc
+                raise OperationInProgress("Another install, update, or launch is in progress.") from exc
             try:
                 yield
             finally:
@@ -525,14 +529,22 @@ class Helper:
 
     def processes(self) -> set[str]:
         output = self.run(["tasklist", "/fo", "csv"], timeout=20, label="Wine process check")
-        return {row[0].lower() for row in csv.reader(io.StringIO(output)) if len(row) >= 2}
+        return {row[0].lower() for row in csv.reader(io.StringIO(output))
+                if len(row) >= 2 and row[1].strip().isdigit()}
 
     def ensure_idle(self):
         if not (self.prefix / "system.reg").exists():
             return
-        busy = self.processes() & {"msw.exe", "ngm.exe", "ngm64.exe", "nexonlauncher64.exe", "vuplex webview.vuplex"}
+        from .session import ACTIVE_APPS, BACKGROUND_APPS, shutdown_prefix
+        running = self.processes()
+        busy = running & ACTIVE_APPS
         if busy:
-            raise HelperError("Close Worlds and Nexon's launcher before changing the installation.")
+            raise HelperError("Close Worlds and Nexon's launcher before changing the installation. "
+                              "Still running: " + ", ".join(sorted(busy)) +
+                              ". If the windows are already closed, use Stop Worlds or ./msw stop.")
+        if running & BACKGROUND_APPS:
+            self.emit("Cleaning up background processes left after Worlds closed…")
+            shutdown_prefix(self)
 
     def verify(self) -> dict:
         missing = []
@@ -566,11 +578,14 @@ class Helper:
         # The NGM process can hand off work to another NGM or launcher process.
         # Ignore Wine services and the game itself; never kill the newly launched game.
         deadline = time.monotonic() + 3600
-        while self.processes() & {"ngm.exe", "ngm64.exe", "nexonlauncher64.exe"}:
+        while (running := self.processes()) & {"ngm.exe", "ngm64.exe", "nexonlauncher64.exe"}:
             self.check_cancel()
             if time.monotonic() > deadline:
                 raise HelperError("Nexon's launcher is still running. Close it and check the log.")
             self.cancel.wait(2)
+        if "msw.exe" in running:
+            from .session import start_watcher
+            start_watcher(self)
 
     def install(self):
         with self.locked():
@@ -638,6 +653,10 @@ class Helper:
     def uninstall(self):
         from .maintenance import uninstall
         uninstall(self)
+
+    def stop(self):
+        from .session import stop
+        stop(self)
 
     def winecfg(self):
         with self.locked():

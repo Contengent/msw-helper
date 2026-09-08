@@ -44,6 +44,7 @@ class Application:
         self.buttons = {}
         for name, label, command in (
                 ("play", "Play Worlds", self.play),
+                ("stop", "Stop Worlds", lambda: self.start("Stopping Worlds…", helper.stop, cancellable=False)),
                 ("install", "Install Worlds", self.install),
                 ("update", "Update / repair", lambda: self.start("Updating Worlds…", helper.update)),
                 ("website", "Website", self.website)):

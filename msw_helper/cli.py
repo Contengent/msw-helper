@@ -26,6 +26,7 @@ def parser():
                             ("verify", "check actual client files; exit nonzero if incomplete"),
                             ("doctor", "show paths, dependencies and installation diagnostics"),
                             ("play", "launch the Worlds desktop client"),
+                            ("stop", "close Worlds and stop its background processes"),
                             ("website", "open the official Worlds website in your browser"),
                             ("register-desktop", "install menu entry and ngm:// handler"),
                             ("winecfg", "open Wine settings for this prefix")):
@@ -95,6 +96,8 @@ def main(argv=None):
             print(json.dumps(helper.doctor(), indent=2))
         elif command == "play":
             helper.play()
+        elif command == "stop":
+            helper.stop()
         elif command == "website":
             if not webbrowser.open(WEBSITE):
                 raise HelperError(f"Could not open your browser. Visit {WEBSITE}")

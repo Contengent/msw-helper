@@ -208,7 +208,7 @@ class MaintenanceTests(unittest.TestCase):
         (self.helper.prefix / 'system.reg').write_text('fixture')
         with patch.object(self.helper, 'require_wine'), \
                 patch.object(self.helper, 'processes', return_value={'msw.exe'}), \
-                patch('msw_helper.maintenance.subprocess.run') as stop:
+                patch('msw_helper.session.subprocess.run') as stop:
             with self.assertRaisesRegex(HelperError, 'Close Worlds'):
                 self.helper.uninstall()
             stop.assert_not_called()
@@ -223,8 +223,8 @@ class MaintenanceTests(unittest.TestCase):
         binary.touch()
         binary.with_name('wineserver').touch()
         with patch.object(self.helper, 'require_wine'), patch.object(self.helper, 'ensure_idle'), \
-                patch('msw_helper.maintenance.shutil.which', return_value=str(binary)), \
-                patch('msw_helper.maintenance.subprocess.run') as stop:
+                patch('msw_helper.session.shutil.which', return_value=str(binary)), \
+                patch('msw_helper.session.subprocess.run') as stop:
             stop_prefix(self.helper)
             self.assertEqual([call.args[0] for call in stop.call_args_list],
                              [[str(binary.with_name('wineserver')), '-k'], [str(binary.with_name('wineserver')), '-w']])

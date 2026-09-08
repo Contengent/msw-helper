@@ -44,6 +44,15 @@ with tempfile.TemporaryDirectory() as data:
         assert "Client launch requested" in app.output.get("1.0", "end")
         app.buttons["website"].invoke()
         browser.assert_called_once()
+    with patch.object(app.helper, "stop") as stop:
+        app.buttons["stop"].invoke()
+        assert str(app.cancel_button["state"]) == "disabled"
+        deadline = time.monotonic() + 5
+        while app.busy and time.monotonic() < deadline:
+            root.update()
+            time.sleep(0.02)
+        stop.assert_called_once_with()
+        assert not app.busy, "Stop Worlds did not complete"
     app.helper.game_dir.mkdir(parents=True)
     app.refresh()
     assert "repair" in app.status.get()

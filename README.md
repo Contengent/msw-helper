@@ -31,11 +31,17 @@ pin them to your taskbar.
 To update the game or fix missing files, close Worlds and click
 **Update / repair**. The client opens again when the check finishes.
 
+After a game launched through the helper closes, the helper automatically stops
+its remaining Wine background processes. If Worlds gets stuck or the helper
+still reports it running, click **Stop Worlds** to close it and clean up its
+dedicated Wine prefix.
+
 If you prefer the terminal:
 
 ```sh
 ./install.sh       # Install Worlds and its menu entries
 ./msw play         # Launch the desktop app
+./msw stop         # Close Worlds and stop its background processes
 ./msw update       # Update or repair the game
 ./uninstall.sh     # Uninstall, with confirmation
 ```
