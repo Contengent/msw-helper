@@ -95,10 +95,10 @@ class AccountsTests(unittest.TestCase):
         self.assertEqual(accounts.route(make_uri("launch")).home, main.data_dir)
 
     # --- world --------------------------------------------------------------
-    def test_world_defaults_to_chronostory(self):
-        world = accounts.Accounts().world
-        self.assertEqual(world["name"], "ChronoStory")
-        self.assertEqual(accounts.world_url(world["id"]),
+    def test_new_accounts_have_no_world(self):
+        self.assertIsNone(accounts.Accounts().add("Main").world)
+        self.assertIsNone(accounts.Accounts().get("main").world)
+        self.assertEqual(accounts.world_url("6697fa1ed9cd4de7bea6daffed99a637"),
                          "https://maplestoryworlds.nexon.com/en/play/6697fa1ed9cd4de7bea6daffed99a637")
 
     def test_parse_world_accepts_page_links_and_ids(self):
@@ -113,12 +113,35 @@ class AccountsTests(unittest.TestCase):
             with self.assertRaises(HelperError, msg=text):
                 accounts.parse_world(text)
 
-    def test_set_world_persists(self):
+    def test_set_world_is_per_account_and_persists(self):
         world_id = "0123456789abcdef0123456789abcdef"
-        accounts.Accounts().set_world("Other World", world_id)
-        self.assertEqual(accounts.Accounts().world, {"name": "Other World", "id": world_id})
+        registry = accounts.Accounts()
+        registry.add("Main")
+        registry.add("Alt")
+        accounts.Accounts().set_world("alt", "Other World", world_id)
+        reloaded = accounts.Accounts()
+        self.assertEqual(reloaded.get("alt").world, {"name": "Other World", "id": world_id})
+        self.assertIsNone(reloaded.get("main").world)
+        # New accounts don't inherit another account's world.
+        self.assertIsNone(accounts.Accounts().add("Third").world)
         with self.assertRaises(HelperError):
-            accounts.Accounts().set_world("Bad", "not-an-id")
+            accounts.Accounts().set_world("main", "Bad", "not-an-id")
+        with self.assertRaises(HelperError):
+            accounts.Accounts().set_world("nobody", "Other World", world_id)
+
+    def test_old_shared_world_carries_over_to_existing_accounts(self):
+        world_id = "0123456789abcdef0123456789abcdef"
+        path = accounts.registry_path()
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps({"version": 1, "world": {"name": "Old World", "id": world_id},
+                                    "accounts": [{"id": "main", "name": "Main",
+                                                  "data_dir": str(self.root / "main")}]}))
+        registry = accounts.Accounts()
+        self.assertEqual(registry.get("main").world, {"name": "Old World", "id": world_id})
+        registry.rename("main", "Main 2")  # Saving writes the world onto the account itself.
+        saved = json.loads(path.read_text())
+        self.assertNotIn("world", saved)
+        self.assertEqual(saved["accounts"][0]["world"]["name"], "Old World")
 
 
 class CloneTests(unittest.TestCase):

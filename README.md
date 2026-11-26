@@ -23,11 +23,12 @@ Open a terminal in this folder and run:
 
 ## Using it
 
-1. Click **+** (or **Add account**) and give the account a name, such as Main.
+1. Click **+** (or **Add account**), give the account a name such as Main, and
+   paste the page link of the world it should play.
 2. A Nexon sign-in window opens. Sign in to that account and tick
    **Login automatically in the future** so it stays signed in. Meanwhile the
    launcher installs the game for that account.
-3. Press **Play**. The launcher opens your world (ChronoStory by default) as that
+3. Press **Play**. The launcher opens that account's world as that
    account and starts the game.
 
 Add more accounts the same way. Each account has its **own game install, Wine
@@ -38,9 +39,10 @@ uses about 5 GB.
 
 While an account is playing, its button turns into **Stop**. The **⋮** menu on
 each account has Sign in again, Sign out, Update / repair game, Wine settings,
-Show log, Rename and Remove. The main menu lets you **Change world…** — paste the
-link of any world page from maplestoryworlds.nexon.com — and register the
-desktop menu entry.
+Show log, **Change world…**, Rename and Remove. Each account has its own world,
+chosen when you add it (or the first time you press Play): paste the link of any
+world page from maplestoryworlds.nexon.com. The main menu registers the desktop
+menu entry.
 
 ### How Play works
 

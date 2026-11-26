@@ -80,7 +80,7 @@ with tempfile.TemporaryDirectory() as temp:
         win = app.window
         pump()
         assert win.stack.get_visible_child_name() == "empty"
-        assert win.title.get_subtitle() == "ChronoStory"
+        assert win.title.get_subtitle() == ""
 
         # First account: Install downloads (no other account to copy from).
         main = accounts.Accounts().add("Main")
@@ -93,6 +93,18 @@ with tempfile.TemporaryDirectory() as temp:
         assert main.helper().home in installed
         row = row_for(win, "main")
         assert row.button.get_label() == "Play", row.button.get_label()
+        assert row.get_subtitle() == "Sign-in needed · No world chosen", row.get_subtitle()
+
+        # No world chosen yet: Play asks for one instead of opening a page.
+        asked = []
+        with patch.object(win, "change_world", lambda account, then=None: asked.append((account.id, then))):
+            row.button.emit("clicked")
+        assert asked == [("main", win.play)], asked
+        assert not FakeLaunchWindow.opened
+        accounts.Accounts().set_world("main", "ChronoStory", "6697fa1ed9cd4de7bea6daffed99a637")
+        win.refresh()
+        assert win.title.get_subtitle() == "ChronoStory"
+        row = row_for(win, "main")
         assert row.get_subtitle() == "Sign-in needed", row.get_subtitle()
 
         # One button: opens the world as this account and hands the link to its prefix.
@@ -105,6 +117,7 @@ with tempfile.TemporaryDirectory() as temp:
 
         # Second account: copied from the first instead of downloaded.
         alt = accounts.Accounts().add("Alt")
+        accounts.Accounts().set_world("alt", "ChronoStory", "6697fa1ed9cd4de7bea6daffed99a637")
         win.refresh()
         row_for(win, "alt").button.emit("clicked")
         pump(until=lambda: not win.state(alt).worker)
@@ -124,12 +137,26 @@ with tempfile.TemporaryDirectory() as temp:
             assert row_for(win, "main").button.get_label() == "Play"
             win._poll_running()
 
-        # World and rename changes show up in the window.
-        accounts.Accounts().set_world("Other World", "0123456789abcdef0123456789abcdef")
+        # Each account has its own world; mixed worlds are named on the rows.
+        accounts.Accounts().set_world("alt", "Other World", "0123456789abcdef0123456789abcdef")
         accounts.Accounts().rename("alt", "Second")
         win.refresh()
-        assert win.title.get_subtitle() == "Other World"
+        assert win.title.get_subtitle() == "", win.title.get_subtitle()
         assert row_for(win, "alt").get_title() == "Second"
+        assert row_for(win, "alt").get_subtitle().endswith(" · Other World"), row_for(win, "alt").get_subtitle()
+        assert row_for(win, "main").get_subtitle().endswith(" · ChronoStory"), row_for(win, "main").get_subtitle()
+        row_for(win, "alt").button.emit("clicked")
+        pump(until=lambda: len(launched) == 3 and not win.state(alt).worker)
+        assert FakeLaunchWindow.opened[-1] == ("alt", "Other World", "play"), FakeLaunchWindow.opened
+        row_for(win, "main").button.emit("clicked")
+        pump(until=lambda: len(launched) == 4 and not win.state(main).worker)
+        assert FakeLaunchWindow.opened[-1] == ("main", "ChronoStory", "play"), FakeLaunchWindow.opened
+
+        # Back to one shared world: the title names it again.
+        accounts.Accounts().set_world("alt", "ChronoStory", "6697fa1ed9cd4de7bea6daffed99a637")
+        win.refresh()
+        assert win.title.get_subtitle() == "ChronoStory"
+        assert row_for(win, "alt").get_subtitle() == "Signed in", row_for(win, "alt").get_subtitle()
 
         assert win._close_request() is False
         win.destroy()

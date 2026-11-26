@@ -372,7 +372,7 @@ libadwaita launcher (`msw_helper/app.py`) and a WebKitGTK 6.0 browser layer
 **Model.** Each account is an independent data directory: its own Wine prefix
 (so clients can run at the same time with separate Wine servers, settings, and
 session watchers) and its own persistent WebKit profile in `web/` (data, cache,
-`cookies.sqlite`). `accounts.Accounts` stores the list and the chosen world in
+`cookies.sqlite`). `accounts.Accounts` stores the list and each account's world in
 `~/.config/msw-helper-wine/accounts.json`, and adopts a pre-existing classic
 install at `~/.local/share/msw-helper-wine` as the **Default** account. Added
 accounts live under `.../msw-helper-wine/instances/<id>` and are claimed with an

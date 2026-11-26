@@ -75,7 +75,6 @@ class MainWindow(Adw.ApplicationWindow):
         add.set_action_name("win.add-account")
         header.pack_start(add)
         menu = Gio.Menu()
-        menu.append("Change world…", "win.change-world")
         menu.append("Register website links", "win.register")
         menu.append("Open data folder", "win.open-data")
         menu.append("About", "win.about")
@@ -111,7 +110,7 @@ class MainWindow(Adw.ApplicationWindow):
 
     # --- actions -------------------------------------------------------------
     def _actions(self):
-        for name, handler in (("add-account", self.add_account), ("change-world", self.change_world),
+        for name, handler in (("add-account", self.add_account),
                               ("register", self.register_links), ("open-data", self.open_data),
                               ("about", self.about)):
             action = Gio.SimpleAction.new(name, None)
@@ -120,7 +119,8 @@ class MainWindow(Adw.ApplicationWindow):
         for name, handler in (("signin", self.sign_in), ("signout", self.sign_out),
                               ("update", self.update_game), ("stop", self.stop_game),
                               ("winecfg", self.wine_settings), ("log", self.show_log),
-                              ("rename", self.rename), ("remove", self.remove), ("cancel", self.cancel)):
+                              ("rename", self.rename), ("remove", self.remove), ("cancel", self.cancel),
+                              ("change-world", self.change_world)):
             action = Gio.SimpleAction.new(name, GLib.VariantType.new("s"))
             action.connect("activate", lambda _a, param, h=handler: self._with_account(param.get_string(), h))
             self.add_action(action)
@@ -135,13 +135,18 @@ class MainWindow(Adw.ApplicationWindow):
     def state(self, account):
         return self.states.setdefault(account.id, AccountState())
 
-    @property
-    def world(self):
-        return self.registry.world
+    def _shared_world(self):
+        """The world every account uses, or None if they differ or none is chosen."""
+        worlds = {a.world["id"] if a.world else None for a in self.registry.accounts}
+        if len(worlds) == 1 and None not in worlds:
+            return self.registry.accounts[0].world
+        return None
 
     def refresh(self):
         self.registry = accounts_mod.Accounts()
-        self.title.set_subtitle(self.world["name"])
+        # One shared world goes in the title; otherwise each row names its own.
+        shared = self._shared_world()
+        self.title.set_subtitle(shared["name"] if shared else "")
         for row in self.rows:
             self.group.remove(row)
         self.rows = []
@@ -204,6 +209,9 @@ class MainWindow(Adw.ApplicationWindow):
         item(game, "Show log", "log")
         menu.append_section(None, game)
         manage = Gio.Menu()
+        # Menu labels treat "_" as a mnemonic marker.
+        item(manage, f"Change world ({account.world['name'].replace('_', '__')})…" if account.world
+             else "Choose world…", "change-world")
         item(manage, "Rename…", "rename")
         item(manage, "Remove…", "remove")
         menu.append_section(None, manage)
@@ -235,6 +243,9 @@ class MainWindow(Adw.ApplicationWindow):
             button.set_label("Play")
             button.add_css_class("suggested-action")
             button.set_sensitive(True)
+        if not state.busy and not self._shared_world():
+            world = GLib.markup_escape_text(account.world["name"]) if account.world else "No world chosen"
+            row.set_subtitle(f"{row.get_subtitle()} · {world}")
         row.menu.set_menu_model(self._menu(account, state))
 
     def _update_row(self, account_id):
@@ -332,7 +343,10 @@ class MainWindow(Adw.ApplicationWindow):
         if state.launch_window is not None:
             state.launch_window.present()
             return
-        state.busy = f"Opening {self.world['name']}…"
+        if not account.world:
+            self.change_world(account, then=self.play)
+            return
+        state.busy = f"Opening {account.world['name']}…"
         self._update_row(account.id)
 
         def on_link(uri):
@@ -345,7 +359,7 @@ class MainWindow(Adw.ApplicationWindow):
             if not captured and not state.worker:
                 state.busy = None
                 self._update_row(account.id)
-        state.launch_window = LaunchWindow(self, account, dict(self.world), mode="play",
+        state.launch_window = LaunchWindow(self, account, dict(account.world), mode="play",
                                            on_link=on_link, on_closed=on_closed)
 
     def sign_in(self, account):
@@ -353,6 +367,9 @@ class MainWindow(Adw.ApplicationWindow):
         state = self.state(account)
         if state.launch_window is not None:
             state.launch_window.present()
+            return
+        if not account.world:  # Sign-in happens on the world's page.
+            self.change_world(account, then=self.sign_in)
             return
 
         def on_signed_in():
@@ -362,7 +379,7 @@ class MainWindow(Adw.ApplicationWindow):
 
         def on_closed(_):
             state.launch_window = None
-        state.launch_window = LaunchWindow(self, account, dict(self.world), mode="signin",
+        state.launch_window = LaunchWindow(self, account, dict(account.world), mode="signin",
                                            on_signed_in=on_signed_in, on_closed=on_closed)
 
     def sign_out(self, account):
@@ -470,7 +487,7 @@ class MainWindow(Adw.ApplicationWindow):
             self.refresh()
             account = self.registry.get(account.id)
             self.install(account)
-            self.sign_in(account)  # Sign in while the game installs.
+            self.sign_in(account)  # Choose a world, then sign in while the game installs.
         self._ask_text("Add account", "Give it a name you'll recognise, such as Main or Alt. "
                        "You'll sign in to Nexon next.", "Account name", "", "Add", create)
 
@@ -522,35 +539,40 @@ class MainWindow(Adw.ApplicationWindow):
         dialog.connect("response", response)
         dialog.present(self)
 
-    def change_world(self):
-        dialog = Adw.AlertDialog(heading="Choose world",
+    def change_world(self, account, then=None):
+        """Ask for the account's world; ``then(account)`` runs once one is saved."""
+        dialog = Adw.AlertDialog(heading=f"Choose world for {account.name}",
                                  body="Open the world on maplestoryworlds.nexon.com and copy its page link.")
         group = Adw.PreferencesGroup()
-        name = Adw.EntryRow(title="World name", text=self.world["name"])
-        link = Adw.EntryRow(title="World page link", text=accounts_mod.world_url(self.world["id"]))
+        world = account.world
+        name = Adw.EntryRow(title="World name", text=world["name"] if world else "")
+        link = Adw.EntryRow(title="World page link", text=accounts_mod.world_url(world["id"]) if world else "")
         group.add(name)
         group.add(link)
         dialog.set_extra_child(group)
         dialog.add_response("cancel", "Cancel")
-        dialog.add_response("default", "Use ChronoStory")
         dialog.add_response("ok", "Save")
         dialog.set_response_appearance("ok", Adw.ResponseAppearance.SUGGESTED)
         dialog.set_close_response("cancel")
 
         def response(_dialog, choice):
             try:
-                if choice == "ok":
-                    accounts_mod.Accounts().set_world(name.get_text(), accounts_mod.parse_world(link.get_text()))
-                elif choice == "default":
-                    accounts_mod.Accounts().set_world(accounts_mod.DEFAULT_WORLD["name"],
-                                                      accounts_mod.DEFAULT_WORLD["id"])
-                else:
+                if choice != "ok":
                     return
+                accounts_mod.Accounts().set_world(account.id, name.get_text(),
+                                                  accounts_mod.parse_world(link.get_text()))
             except HelperError as exc:
                 self.error("Couldn't change world", str(exc))
                 return
             self.refresh()
-            self.toast(f"Play now opens {self.world['name']}")
+            try:
+                updated = self.registry.get(account.id)
+            except HelperError:
+                return
+            if then:
+                then(updated)
+            else:
+                self.toast(f"{account.name}: Play now opens {updated.world['name']}")
         dialog.connect("response", response)
         dialog.present(self)
 

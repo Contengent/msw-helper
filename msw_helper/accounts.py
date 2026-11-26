@@ -20,7 +20,6 @@ from .core import Helper, HelperError, atomic_json
 REGISTRY_VERSION = 1
 DEFAULT_ID = "default"
 WORLD_HOST = "https://maplestoryworlds.nexon.com"
-DEFAULT_WORLD = {"name": "ChronoStory", "id": "6697fa1ed9cd4de7bea6daffed99a637"}
 _SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,31}$")
 _WORLD_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 _WORLD_URL_RE = re.compile(r"^https://maplestoryworlds\.nexon\.com/(?:[a-z]{2}/)?play/([0-9a-f]{32})/?(?:[?#].*)?$")
@@ -75,6 +74,14 @@ def parse_world(text: str) -> str:
     return match.group(1)
 
 
+def _valid_world(value):
+    """Return a clean {"name", "id"} world, or None if ``value`` isn't one."""
+    if (isinstance(value, dict) and isinstance(value.get("name"), str) and value["name"].strip()
+            and isinstance(value.get("id"), str) and _WORLD_ID_RE.match(value["id"])):
+        return {"name": value["name"].strip(), "id": value["id"]}
+    return None
+
+
 def _valid_id(value) -> bool:
     return isinstance(value, str) and bool(_SLUG_RE.match(value))
 
@@ -84,10 +91,11 @@ def _slug(name: str) -> str:
 
 
 class Account:
-    def __init__(self, id: str, name: str, data_dir):
+    def __init__(self, id: str, name: str, data_dir, world=None):
         self.id = id
         self.name = name
         self.data_dir = Path(data_dir)
+        self.world = dict(world) if world else None  # Chosen in the launcher before first Play.
 
     @property
     def web_dir(self) -> Path:
@@ -97,16 +105,18 @@ class Account:
         return Helper(self.data_dir, wine=wine, emit=emit)
 
     def to_dict(self) -> dict:
-        return {"id": self.id, "name": self.name, "data_dir": str(self.data_dir)}
+        return {"id": self.id, "name": self.name, "data_dir": str(self.data_dir), "world": self.world}
 
 
 class Accounts:
-    """The ordered account list and the selected world, saved in one file."""
+    """The ordered account list, each with its own world, saved in one file."""
 
     def __init__(self):
         self.path = registry_path()
         self.accounts: list[Account] = []
-        self.world = dict(DEFAULT_WORLD)
+        # Older registries kept one world for every account; it still applies
+        # to accounts that don't have their own yet.
+        self._legacy_world = None
         self._load()
         self._adopt_default()
 
@@ -117,10 +127,7 @@ class Accounts:
             return
         if not isinstance(data, dict) or data.get("version") != REGISTRY_VERSION:
             return
-        world = data.get("world")
-        if (isinstance(world, dict) and isinstance(world.get("name"), str) and world["name"].strip()
-                and isinstance(world.get("id"), str) and _WORLD_ID_RE.match(world["id"])):
-            self.world = {"name": world["name"].strip(), "id": world["id"]}
+        self._legacy_world = _valid_world(data.get("world"))
         rows = data.get("accounts")
         seen = set()
         for row in rows if isinstance(rows, list) else []:
@@ -130,7 +137,8 @@ class Accounts:
             if (_valid_id(id) and id not in seen and isinstance(name, str) and name.strip()
                     and isinstance(path, str) and Path(path).is_absolute()):
                 seen.add(id)
-                self.accounts.append(Account(id, name.strip(), Path(path)))
+                world = _valid_world(row.get("world")) or self._legacy_world
+                self.accounts.append(Account(id, name.strip(), Path(path), world))
 
     def _adopt_default(self):
         """Register an existing single-account install so upgraders keep it."""
@@ -138,7 +146,7 @@ class Accounts:
         if any(a.data_dir == home for a in self.accounts):
             return
         if (home / "prefix/system.reg").exists() or (home / "installation.json").exists():
-            self.accounts.insert(0, Account(self._unique_id(DEFAULT_ID), "Default", home))
+            self.accounts.insert(0, Account(self._unique_id(DEFAULT_ID), "Default", home, self._legacy_world))
             self._save()
 
     def _unique_id(self, base: str) -> str:
@@ -149,7 +157,7 @@ class Accounts:
         return id
 
     def _save(self):
-        atomic_json(self.path, {"version": REGISTRY_VERSION, "world": self.world,
+        atomic_json(self.path, {"version": REGISTRY_VERSION,
                                 "accounts": [a.to_dict() for a in self.accounts]})
 
     def get(self, id: str) -> Account:
@@ -204,13 +212,14 @@ class Accounts:
         if len(self.accounts) != before:
             self._save()
 
-    def set_world(self, name: str, world_id: str):
+    def set_world(self, id: str, name: str, world_id: str):
+        """Choose the world that Play opens for one account."""
         name = name.strip()
         if not name:
             raise HelperError("Enter a name for the world.")
         if not _WORLD_ID_RE.match(world_id):
             raise HelperError("That is not a valid world id.")
-        self.world = {"name": name, "id": world_id}
+        self.get(id).world = {"name": name, "id": world_id}
         self._save()
 
     def installed(self, *, wine=None) -> list[Account]:
