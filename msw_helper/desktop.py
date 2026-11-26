@@ -13,7 +13,9 @@ from .core import HelperError, atomic_json
 APP_ID = "msw-helper-wine.desktop"
 MANAGER_ID = "msw-helper-wine-manager.desktop"
 PROTOCOL_ID = "msw-helper-wine-ngm.desktop"
-GUI_CLASS = "Msw-helper-wine"
+# The launcher's application id: its Wayland app id and the hidden entry's
+# StartupWMClass, so the launcher window gets the right name and icon.
+GUI_CLASS = "io.github.MswHelperWine"
 MIME_TYPE = "x-scheme-handler/ngm"
 RESOURCES = Path(__file__).resolve().parent / "resources"
 DESKTOP_IDS = (APP_ID, MANAGER_ID, PROTOCOL_ID)
@@ -43,8 +45,9 @@ def string_value(value):
 def desktop_files(helper):
     destination = helper.home / "helper"
     wine = shutil.which(helper.wine) or helper.wine
-    command = " ".join(exec_argument(arg) for arg in
-                       (sys.executable, destination / "msw", "--data-dir", helper.home, "--wine", wine))
+    # No --data-dir: the launcher lists every account, and a website link opened
+    # in the user's own browser goes to the first account.
+    command = " ".join(exec_argument(arg) for arg in (sys.executable, destination / "msw", "--wine", wine))
     files = {}
     data_home = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share")).resolve()
     for name in DESKTOP_IDS:
@@ -132,8 +135,10 @@ def _register(helper):
     if source != destination / "msw_helper":
         shutil.copytree(source, destination / "msw_helper", dirs_exist_ok=True,
                         ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
-    # copytree merges updates, so explicitly retire the former bundled artwork.
-    (destination / "msw_helper/resources/msw-helper-wine.svg").unlink(missing_ok=True)
+    # copytree merges updates, so explicitly retire files removed from the source:
+    # the former bundled artwork and the replaced Tk interfaces.
+    for retired in ("resources/msw-helper-wine.svg", "gui.py", "manager.py"):
+        (destination / "msw_helper" / retired).unlink(missing_ok=True)
     launcher = destination / "msw"
     launcher.write_text("#!/usr/bin/env python3\nfrom msw_helper.cli import main\nraise SystemExit(main())\n")
     launcher.chmod(0o755)

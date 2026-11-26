@@ -127,6 +127,24 @@ def native_processes(prefix, proc_root=Path("/proc")):
     return result
 
 
+# Wine's own native processes, and CEF's crash handler (its comm is truncated).
+WINE_NATIVE = {"wineserver", "wine", "wine64", "wine-preloader", "wine64-preloader", "winedbg", "crashpad_handle"}
+
+
+def is_wine_process(name):
+    return name.endswith((".exe", ".vuplex", ".aes")) or name in WINE_NATIVE
+
+
+def prefix_processes(prefix, proc_root=Path("/proc")):
+    """Processes that actually run in the prefix: Windows images and Wine itself.
+
+    A native app the game opened — Firefox via winebrowser/xdg-open, for one —
+    inherits WINEPREFIX but is not part of the session. Counting it would make
+    cleanup retry forever and hold the operation lock, blocking Play and updates.
+    """
+    return {pid: name for pid, name in native_processes(prefix, proc_root).items() if is_wine_process(name)}
+
+
 def shutdown_prefix(helper):
     from .maintenance import validate_ownership
     validate_ownership(helper)
@@ -145,17 +163,13 @@ def shutdown_prefix(helper):
     except (OSError, subprocess.SubprocessError) as exc:
         failure = exc
         helper.emit("Wine shutdown did not finish; checking for stuck Worlds processes…")
-    remaining = native_processes(helper.prefix)
+    remaining = prefix_processes(helper.prefix)
     if remaining:
         # Crash handlers and browser children can outlive Wine's server. Limit
         # the fallback to known Wine images and their native crash handler.
-        names = {name for name in remaining.values()
-                 if name.endswith((".exe", ".vuplex", ".aes")) or name in {
-                     "wineserver", "wine", "wine64", "wine-preloader", "wine64-preloader",
-                     "winedbg", "crashpad_handle"}}
-        terminate_processes(helper, names)
+        terminate_processes(helper, set(remaining.values()))
         deadline = time.monotonic() + 2
-        while (remaining := native_processes(helper.prefix)) and time.monotonic() < deadline:
+        while (remaining := prefix_processes(helper.prefix)) and time.monotonic() < deadline:
             time.sleep(0.05)
         if remaining:
             raise HelperError("Worlds shutdown is incomplete. Still running: " +
@@ -205,7 +219,7 @@ def watch_session(helper, interval=2):
     quit_log = QuitLog(helper)
     quitting = False
     while (helper.prefix / "system.reg").exists():
-        native = native_processes(helper.prefix)
+        native = prefix_processes(helper.prefix)
         if not native:
             return
         servers = {pid for pid, name in native.items() if name == "wineserver"}
@@ -227,7 +241,7 @@ def watch_session(helper, interval=2):
                 with helper.locked():
                     if not (helper.prefix / "system.reg").exists():
                         return
-                    native = native_processes(helper.prefix)
+                    native = prefix_processes(helper.prefix)
                     current_servers = {pid for pid, name in native.items() if name == "wineserver"}
                     if current_servers and server_pid not in current_servers:
                         return

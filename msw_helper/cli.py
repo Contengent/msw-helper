@@ -14,12 +14,14 @@ def parser():
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--data-dir", type=Path, default=argparse.SUPPRESS,
                         help="data directory containing prefix, cache and logs (or MSW_HOME)")
+    common.add_argument("--account", default=argparse.SUPPRESS,
+                        help="account id or name from the manager (alternative to --data-dir)")
     common.add_argument("--wine", default=argparse.SUPPRESS,
                         help="Wine executable (or MSW_WINE; default: wine)")
     p = argparse.ArgumentParser(description="Install, update and launch MapleStory Worlds with Wine.", parents=[common])
     p.add_argument("--version", action="version", version=__version__)
     commands = p.add_subparsers(dest="command")
-    for name, help_text in (("gui", "open the graphical helper (default)"),
+    for name, help_text in (("gui", "open the account launcher (default)"),
                             ("install", "install the actual Worlds client and desktop entries"),
                             ("uninstall", "remove Worlds, its prefix, downloads and desktop integration"),
                             ("update", "check/repair game files using Nexon, then open the client"),
@@ -42,25 +44,47 @@ def parser():
 
 
 def show_error(message):
+    """Show an error when there is no terminal (desktop entries, website links)."""
     try:
-        import tkinter as tk
-        from tkinter import messagebox
-        root = tk.Tk()
-        root.withdraw()
-        messagebox.showerror("MapleStory Worlds", message, parent=root)
-        root.destroy()
+        import gi
+        gi.require_version("Gtk", "4.0")
+        gi.require_version("Adw", "1")
+        from gi.repository import Adw, Gio
+        app = Adw.Application(flags=Gio.ApplicationFlags.NON_UNIQUE)
+
+        def activate(app):
+            app.hold()
+            dialog = Adw.AlertDialog(heading="MapleStory Worlds", body=message)
+            dialog.add_response("ok", "OK")
+            dialog.connect("closed", lambda *_: app.release())
+            dialog.present(None)
+        app.connect("activate", activate)
+        app.run([sys.argv[0]])
     except Exception:
-        pass  # The CLI error remains available without Tk or a display.
+        pass  # The CLI error remains available without GTK or a display.
 
 
 def main(argv=None):
     args = parser().parse_args(argv)
-    helper = Helper(getattr(args, "data_dir", None), getattr(args, "wine", None))
     command = args.command or "gui"
+    wine = getattr(args, "wine", None)
     try:
+        data_dir = getattr(args, "data_dir", None)
+        account = getattr(args, "account", None)
+        if account is not None:
+            if data_dir is not None:
+                raise HelperError("Use --account or --data-dir, not both.")
+            from .accounts import Accounts
+            data_dir = Accounts().resolve(account).data_dir
+        helper = Helper(data_dir, wine)
         if command == "gui":
-            from .gui import run_gui
-            run_gui(helper)
+            try:
+                from .app import run_app
+            except (ImportError, ValueError) as exc:  # gi missing, or a typelib version missing.
+                raise HelperError("The launcher needs PyGObject with GTK 4, libadwaita and WebKitGTK 6.0 "
+                                  "(Arch: python-gobject gtk4 libadwaita webkitgtk-6.0; Debian/Ubuntu: "
+                                  "python3-gi gir1.2-gtk-4.0 gir1.2-adw-1 gir1.2-webkit-6.0).") from exc
+            return run_app(wine)
         elif command == "install":
             helper.install()
             if not args.no_desktop:
@@ -105,7 +129,13 @@ def main(argv=None):
             from .desktop import register
             register(helper)
         elif command == "open":
-            helper.open_uri(args.uri)
+            if data_dir is not None:
+                helper.open_uri(args.uri)
+            else:
+                # Website links route to the account the user pressed Log in for,
+                # otherwise the default account. Explicit --data-dir/--account wins.
+                from .accounts import route
+                route(args.uri, wine=wine).open_uri(args.uri)
         elif command == "winecfg":
             helper.winecfg()
     except KeyboardInterrupt:

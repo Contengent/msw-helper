@@ -64,17 +64,19 @@ with tempfile.TemporaryDirectory(prefix='msw lifecycle % $ " ` \\ ') as temp:
         result = directory / 'recorded.json'
         launcher.write_text('import json, pathlib, sys\n' +
                             f'pathlib.Path({str(result)!r}).write_text(json.dumps(sys.argv[1:]))\n')
-        for name, command, url in ((desktop.APP_ID, 'play', None),
-                                    (desktop.MANAGER_ID, 'gui', None),
-                                    (desktop.PROTOCOL_ID, 'open', uri)):
+        # No entry pins --data-dir: the launcher lists every account, and a
+        # browser link goes to the first account.
+        for name, command, url in ((desktop.APP_ID, 'gui', None),
+                                   (desktop.MANAGER_ID, 'gui', None),
+                                   (desktop.PROTOCOL_ID, 'open', uri)):
             result.unlink(missing_ok=True)
             subprocess.run(['gio', 'launch', str(apps / name), *([url] if url else [])], check=True)
             deadline = time.monotonic() + 5
             while not result.exists() and time.monotonic() < deadline:
                 time.sleep(0.02)
             args = json.loads(result.read_text())
-            assert args[:2] == ['--data-dir', str(helper.home)]
-            assert args[4:] == [command, *([url] if url else [])], args
+            assert '--data-dir' not in args, args
+            assert args[0] == '--wine' and args[2:] == [command, *([url] if url else [])], args
         launcher.write_text(installed_source)
         helper.prefix.mkdir()
         (helper.prefix / 'fixture-game').write_text('disposable game data')

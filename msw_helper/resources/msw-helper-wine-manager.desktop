@@ -1,10 +1,11 @@
 [Desktop Entry]
 Type=Application
-Name=MapleStory Worlds Helper
-Comment=Install, update, repair or uninstall MapleStory Worlds
+Name=MapleStory Worlds
+Comment=Launch MapleStory Worlds accounts
 Exec=@COMMAND@ gui
 Icon=@ICON@
 Categories=Game;
+Keywords=Maple;Worlds;MSW;Nexon;
 Terminal=false
-StartupWMClass=Msw-helper-wine
+StartupWMClass=io.github.MswHelperWine
 X-MSW-DataDir=@DATA_DIR@

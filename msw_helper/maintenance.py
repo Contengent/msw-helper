@@ -9,7 +9,9 @@ from .core import HelperError, atomic_json
 MARKER = "installation.json"
 # Never recursively delete the user-selected data directory itself. It may also
 # contain unrelated files. Wine's drive links are unlinked, not traversed.
-DIRECTORIES = ("prefix", "cache", "logs", "helper")
+# "web" is the account's private Nexon sign-in profile; "prefix.partial" is an
+# interrupted copy from another account.
+DIRECTORIES = ("prefix", "cache", "logs", "helper", "web", "prefix.partial")
 FILES = ("state.json", "dxvk.json", "desktop-state.json", MARKER)
 
 

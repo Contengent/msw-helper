@@ -1,15 +1,19 @@
-# MapleStory Worlds Wine Helper
+# MapleStory Worlds Wine Launcher
 
-A small helper for installing and playing MapleStory Worlds on Linux through
-Wine. It downloads the official Windows client, sets up the components it needs,
-and handles updates. You can launch the game from the helper, your application
-menu, or the Worlds website.
+An unofficial launcher for playing MapleStory Worlds on Linux through Wine, with
+several accounts side by side. Add your accounts once, sign in to each one once,
+and from then on each account starts your world with a single **Play** button.
+It downloads the official Windows client, sets up the components it needs, and
+handles updates.
 
-![MapleStory Worlds Helper](docs/helper.png)
+![MapleStory Worlds launcher](docs/launcher.png)
 
-You'll need 64-bit Linux, Wine, Python 3.11 or newer with Tk, and `xdg-utils`.
-Your graphics driver needs Vulkan 1.4 support for DXVK. Allow at least 6 GiB of
-free space. Tk is called `tk` on Arch and `python3-tk` on Debian/Ubuntu.
+You'll need 64-bit Linux, Wine, Python 3.11 or newer, PyGObject with GTK 4,
+libadwaita and WebKitGTK 6.0, and `xdg-utils`. Your graphics driver needs Vulkan 1.4
+support for DXVK. Allow at least 6 GiB of free space for the first account.
+
+- Arch: `wine python-gobject gtk4 libadwaita webkitgtk-6.0 xdg-utils`
+- Debian/Ubuntu: `wine python3-gi gir1.2-gtk-4.0 gir1.2-adw-1 gir1.2-webkit-6.0 xdg-utils`
 
 Open a terminal in this folder and run:
 
@@ -17,55 +21,82 @@ Open a terminal in this folder and run:
 ./msw
 ```
 
-Click **Install Worlds** the first time. When installation finishes, click
-**Play Worlds** to open the desktop app.
+## Using it
 
-Installation also adds two entries to your application menu:
+1. Click **+** (or **Add account**) and give the account a name, such as Main.
+2. A Nexon sign-in window opens. Sign in to that account and tick
+   **Login automatically in the future** so it stays signed in. Meanwhile the
+   launcher installs the game for that account.
+3. Press **Play**. The launcher opens your world (ChronoStory by default) as that
+   account and starts the game.
 
-- **MapleStory Worlds (Wine)** opens the game.
-- **MapleStory Worlds Helper** opens the helper GUI.
+Add more accounts the same way. Each account has its **own game install, Wine
+prefix and Nexon sign-in**, so several can play at the same time without
+interfering with each other. A new account copies the game from an existing one
+rather than downloading it again (close that account's game first); each account
+uses about 5 GB.
 
-Both use the original Worlds icon and match their running windows, so you can
-pin them to your taskbar.
+While an account is playing, its button turns into **Stop**. The **⋮** menu on
+each account has Sign in again, Sign out, Update / repair game, Wine settings,
+Show log, Rename and Remove. The main menu lets you **Change world…** — paste the
+link of any world page from maplestoryworlds.nexon.com — and register the
+desktop menu entry.
 
-To update the game or fix missing files, close Worlds and click
-**Update / repair**. The client opens again when the check finishes.
+### How Play works
 
-When Worlds accepts Quit, the helper gives it five seconds to finish, then
-stops its remaining game, browser, and Wine processes and checks that they
-have exited. Closing the game window still requires confirming the game's
-Quit dialog. If Worlds gets stuck before accepting Quit, click **Stop Worlds**
-to close it and clean up its dedicated Wine prefix.
+The Worlds website starts the game by building a launch link from your signed-in
+browser session. Each account in the launcher has its own private browser
+profile: Play opens your world's page in that profile, lets the site's own Play
+button build the link, and hands the link straight to that account's game
+instead of to your normal browser. If the account isn't signed in, the same
+window shows Nexon's real sign-in page. Your password is entered only into
+Nexon's page; the launcher never sees or stores it.
 
-Vuplex can still show an error during quit. The shutdown timeout clears stuck
-processes; that browser crash remains under investigation. See the
-[validation notes](docs/validation.md#recurrent-quit-crash-symbolized-evidence).
+The game's built-in **LOG IN** button doesn't work under Wine (Toy SDK error
+`803020007`), which is why sign-in goes through the website. See the
+[validation notes](docs/validation.md#login-and-per-account-sessions).
 
-If you prefer the terminal:
+## Desktop integration
+
+The first install adds **MapleStory Worlds** to your application menu. It opens
+the launcher, and running game windows group under the same icon, so you can pin
+it to your taskbar. It also registers the `ngm://` handler, so pressing Play on
+the website in your own browser still works — those launches go to the first
+account. After pulling an update to this repo, use **Register website links**
+in the menu (or `./msw register-desktop`) to update the installed copy.
+
+## Command line
 
 ```sh
-./install.sh       # Install Worlds and its menu entries
-./msw play         # Launch the desktop app
-./msw stop         # Close Worlds and stop its background processes
-./msw update       # Update or repair the game
-./uninstall.sh     # Uninstall, with confirmation
+./msw                          # Open the launcher
+./msw --account alt stop       # Close an account's game and its background processes
+./msw --account alt update     # Update or repair an account's game files
+./msw --account alt doctor     # Show an account's paths and installation status
+./msw --account alt uninstall  # Delete an account's game and prefix, with confirmation
 ```
 
-The **Website** button opens the
-[Worlds website](https://maplestoryworlds.nexon.com/en/play). You can sign in and
-choose a world there too; allow the browser to open the game when it asks.
+`--account` takes an account's name or id. `./msw --help` lists everything.
+Playing through the launcher is the reliable path; `./msw play` opens the client
+without a sign-in, which hits the broken in-game login.
 
-To remove the installation, use **Uninstall…** in the helper or `./uninstall.sh`.
-This removes the game, its local settings, cached downloads, and the installed
-launchers. You can preview what will be removed with `./msw uninstall --dry-run`.
+When the game accepts Quit, the launcher gives it five seconds to finish, then
+stops its remaining game, browser, and Wine processes. Closing the game window
+still requires confirming the game's Quit dialog. Vuplex can still show an error
+during quit; see the
+[validation notes](docs/validation.md#recurrent-quit-crash-symbolized-evidence).
 
-Files are stored in `~/.local/share/msw-helper-wine` by default. No `sudo` is
-needed to run the helper. After pulling an update to this repo, run
-`./msw register-desktop` to update the installed helper and menu entries.
+## Files
 
-If something goes wrong, **Open logs** shows the logs and `./msw doctor` reports
-the installation's status. More options are listed in `./msw --help`; the
+The account list and chosen world live in `~/.config/msw-helper-wine/accounts.json`.
+An install from before multi-account support (in `~/.local/share/msw-helper-wine`)
+appears as the **Default** account; added accounts are stored under
+`~/.local/share/msw-helper-wine/instances/`. Each account folder holds its Wine
+prefix, logs, and its private Nexon sign-in profile (`web/`). **Remove…** →
+**Delete everything** deletes an account's folder contents; no `sudo` is needed.
+
+If something goes wrong, **Show log** in an account's menu shows what happened,
+and `./msw --account <name> doctor` reports the installation's status. The
 [testing notes](docs/validation.md) cover the Wine setup and issues we've seen.
 
-Helper source: [GPL-3.0-or-later](LICENSE). MapleStory Worlds and its artwork
-belong to their respective owners.
+Launcher source: [GPL-3.0-or-later](LICENSE). MapleStory Worlds and its artwork
+belong to their respective owners. This project is not affiliated with Nexon.

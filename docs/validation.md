@@ -69,7 +69,8 @@ and component revision/cache invalidation were tested.
   spaces, plus signs, and percent encoding.
 - Ran the real Tk GUI: verified button callbacks, worker-to-GUI progress,
   completion, enabled repair for incomplete files, and a visible cancel button.
-  [GUI screenshot](helper.png) shows the installed state.
+  (That Tk GUI has since been replaced by the GTK launcher; see
+  [Account launcher](#account-launcher-2026-11-23).)
 - Observed the actual Worlds window render its logo, navigation, avatar, and
   main interface under Wine.
 
@@ -94,7 +95,7 @@ texture at `Vuplex WebView.vuplex + 0x70cc5`. Unity also logged a
 `NullReferenceException` from `Vuplex.WebView.Internal.BaseWebView.HandleInitFinished`.
 
 DXVK 2.7.1 still failed, reporting a missing shared-resource handle. **DXVK 3.1**
-resolved the reproduced failure on Wine 11.16 with the NVIDIA 610.57.04 driver:
+resolved the reproduced failure on Wine 11.16 with an NVIDIA driver:
 the browser and its child processes remained running, with no new shared-texture
 errors or Unity WebView exception. The Friends/Chat panel rendered successfully.
 The fix uses the shared-resource
@@ -258,7 +259,7 @@ processes. The test did not establish a crash-free quit of a fully loaded world.
 ```sh
 python3 -m unittest discover -s tests -v
 PYTHONPATH=. python3 tests/session_smoke.py
-PYTHONPATH=. python3 tests/gui_smoke.py
+PYTHONPATH=. python3 tests/app_smoke.py      # was tests/gui_smoke.py (Tk, since removed)
 PYTHONPATH=. python3 tests/desktop_smoke.py
 ./msw verify
 ```
@@ -318,3 +319,164 @@ has been installed. EOF at the CLI uninstall prompt cancels removal.
 Further testing can cover repeated clean launches into a world after the
 error-201 recovery and a full installation/update/removal cycle on another
 machine. The results above describe the configuration tested locally.
+
+## Login and per-account sessions
+
+The in-client **Toy SDK** login (NGM's embedded WebView2 form) was observed
+failing under Wine with `Network Error — Request / Log in failure (Toy SDK)`,
+Toy error `803020007`. The dependable path is the website: it hands NGM an
+`ngm://launch/` link that already carries the account's token, and NGM opens the
+client authenticated. The launcher never persists that link
+(`core.Helper.open_uri`; the session watcher receives paths only).
+
+The game also keeps per-account state in the prefix — Unity PlayerPrefs under
+`HKCU\Software\Nexon\MapleStory Worlds` include `@access_token_*`, `@user_id_*`
+and `bt-MOD.UserName_*`, and NGM's WebView2 profile lives at
+`drive_c/ProgramData/Nexon/NGM/NGM64.exe.WebView2`. That state is **not** enough
+to skip sign-in: a tokenless launch (`make_uri("launch")`) of an installed prefix
+that had previously entered a world still showed the game's LOG IN screen and
+the Toy SDK error above (the user's screenshot). Every Play therefore needs a
+fresh website link. Only value names were inspected; no token contents were read.
+
+### How the website builds the launch link
+
+Fetched from the live site on 2026-11-23 (`platform.nexon.com/ngm/js/npf_ngm.js`
+and the site's Nuxt bundle). The world page's **Play** (`button.btn_play`) calls
+`$evt.startMODGame("play", game)`, which — when signed in, on desktop — calls
+`NGM.LaunchGame2("106603@1585", "/npsn:<GUID> /runmode:play /gameid:<world> /publishid:… /gamename:… /publishname:…")`.
+`GxLaunchGame` reads the `NPP` cookie (passed as `-token:`), `A2SK` (`-a2sk:`)
+and an insign token from `_ifwt`, all via `document.cookie`, and
+`OpenUriWithHiddenFrameWithoutBlur` assigns the finished URI to a hidden iframe.
+Signed out, the same Play button navigates to `signin.nexon.com` /
+`www.nexon.com/account/en/login`.
+
+`ExecuteNGM` only proceeds when `CustomScheme.IsSupportedBrowser()` is true,
+i.e. Firefox (`InstallTrigger`), Chrome (`window.chrome`), Opera, or Safari on
+macOS. WebKitGTK on Linux matches none, so its Play button would do nothing. The
+launcher injects `window.chrome = {runtime: {}}` at document start, on
+`https://maplestoryworlds.nexon.com/*` only. Nexon's sign-in pages and the
+Cloudflare check are not modified. The site sits behind Cloudflare: plain HTTP
+clients get a 403 challenge page, while WebKitGTK passes it (the first world-page
+load took up to ~35 s; later loads reuse the clearance cookie).
+
+ChronoStory is group `6AK9I`, world page
+`https://maplestoryworlds.nexon.com/en/play/6697fa1ed9cd4de7bea6daffed99a637`.
+
+## Account launcher (2026-11-23)
+
+The Tk helper and the interim Tk account manager were replaced by a GTK 4 /
+libadwaita launcher (`msw_helper/app.py`) and a WebKitGTK 6.0 browser layer
+(`msw_helper/web.py`). Tested with GTK 4.24.1, libadwaita 1.10.0, WebKitGTK
+2.54.2 and PyGObject 3.58.1 on Wayland.
+
+**Model.** Each account is an independent data directory: its own Wine prefix
+(so clients can run at the same time with separate Wine servers, settings, and
+session watchers) and its own persistent WebKit profile in `web/` (data, cache,
+`cookies.sqlite`). `accounts.Accounts` stores the list and the chosen world in
+`~/.config/msw-helper-wine/accounts.json`, and adopts a pre-existing classic
+install at `~/.local/share/msw-helper-wine` as the **Default** account. Added
+accounts live under `.../msw-helper-wine/instances/<id>` and are claimed with an
+ownership marker before their web profile or prefix exists, so uninstall may
+remove them; `web` and `prefix.partial` were added to the uninstall set.
+
+**Play.** `LaunchWindow` loads the world page in the account's profile, polls
+for the Play button plus `window.NGM` and the Nuxt store, and presses Play. A
+`decide-policy` handler catches any `ngm:` navigation (including the hidden
+iframe), validates it with `core.validate_uri`, ignores it (so it never reaches
+the desktop), and hands it to that account's `Helper.open_uri`. All other
+non-web schemes are blocked. The window stays visible so the user can sign in,
+pass a site check, or press Play by hand; it closes itself once the link is
+caught. Popups (social sign-in) open as related views in the same profile.
+
+**Staying signed in.** Nexon's page offers "Login automatically in the future";
+the launcher asks the user to tick it. WebKit does not persist session-only
+cookies, so the launcher also saves Nexon's session cookies to
+`web/session-cookies.json` (mode 0600 in a 0700 directory) after a signed-in page
+and restores them once per run. Whether a given Nexon session survives a long
+gap was not measured; an expired one simply leads back to the sign-in page.
+
+**Live checks, signed out** (fresh throwaway profile, real site). The window
+passed Cloudflare, found `button.btn_play`, `window.NGM` and the store, reported
+the site as a supported browser with the shim, pressed Play once, and reached
+`https://www.nexon.com/account/en/login` showing Nexon's real form. No link was
+captured and nothing launched. In a separate prototype, calling the site's own
+`NGM.LaunchGame2('106603@1585', …)` produced an `ngm://launch/` link that the
+policy handler caught; it carried `-mode -game -passarg -insign_token -position
+-architectureplatform -timestamp` (no `-token`, as expected when signed out).
+
+A first live run pressed Play three times, because after a press the site
+reloads the world page several times before it navigates. That would have used
+up the automatic presses before the user returned from sign-in. Presses now have
+a cooldown (10 s signed in, 30 s signed out; reaching sign-in was observed to
+take ~12–50 s) and separate signed-in and signed-out budgets, and the cooldown
+resets on the sign-in page. Polls only act on Worlds pages, so a sign-in cookie
+appearing mid-sign-in (for example during 2-step verification) cannot pull the
+window away. The rerun pressed once.
+
+**Not tested here:** a signed-in launch, because it needs the user's own Nexon
+credentials. That step relies on the site's documented-above code path, which
+the prototype exercised up to the token.
+
+**Copying an install.** A new account copies an installed, idle account's prefix
+instead of downloading. Measured on the real Default prefix (5.2 GB), the largest
+parts are the game (1.9 GB), its `resource_cache` (1.7 GB) and Edge/WebView2
+(0.9 GB). The copy skips crash reports (`backtrace`, 211 MB), the in-game browser
+profile (`Vuplex.WebView`), NGM's WebView2 profile, `Player*.log`, and temp
+folders, then deletes the game's PlayerPrefs key so the new account doesn't
+inherit the old one's saved token. With real Wine 11.16, `reg delete` of that
+key returned 0 and removed it from `user.reg`, and returned 1 when it was already
+absent; both are accepted. Drive links (`dosdevices/z:` → `/`) are copied as
+links, and an interrupted copy leaves no prefix. The copy then runs
+`Helper.finish("clone")`, which verifies the client and registers it.
+
+Copying refuses while Wine or game processes use the source prefix. The live
+process list for the Default prefix also contained the user's native Firefox
+(`firefox`, `web content`, …), which inherited `WINEPREFIX` when the game opened a
+link; an early version would therefore have refused to copy even after the game
+was closed. The check now counts only Windows images and Wine processes. A full
+real copy was not run because the user's game was open at the time.
+
+**Desktop.** The visible menu entry is `msw-helper-wine-manager.desktop`
+("MapleStory Worlds"), which opens the launcher and matches its application id
+`io.github.MswHelperWine`. `msw-helper-wine.desktop` is hidden and keeps
+`StartupWMClass=msw.exe`, so game windows get the Worlds name and icon. Neither
+pins `--data-dir`. The `ngm://` handler sends links opened from the user's own
+browser to the first account. Error pop-ups from desktop launches now use
+libadwaita instead of Tk.
+
+The first version of the launcher hid the manager entry instead, and the user's
+pinned launcher disappeared: their GNOME dash favourite was
+`msw-helper-wine-manager.desktop`, and GNOME drops `NoDisplay` entries from the
+dash. The entry ids now keep that file visible. Re-registration also deletes
+the retired `gui.py`/`manager.py` from the installed copy, because the copy step
+only adds and overwrites files.
+
+**Cleanup watcher and native browsers.** Re-registering then failed with
+"Another install, update, or launch is in progress". `/proc/locks` showed the
+session watcher holding the operation lock. Its log repeated "Worlds shutdown is
+incomplete. Still running: crashhelper, firefox, forkserver, … web content"
+for over nine minutes: the user's Firefox, opened by the game through
+winebrowser, inherited `WINEPREFIX`. `shutdown_prefix` correctly never kills
+Firefox, but it counted Firefox as remaining, failed, and retried forever, taking
+the lock every few seconds. That also intermittently blocked Play and updates
+for that account. `session.prefix_processes` now counts only Windows images and
+Wine's own processes. `shutdown_prefix`, the watcher and the account copy check
+use it, so a native app that merely inherited the variable no longer keeps a
+session alive. The stuck watcher (old code) was stopped by hand; no Wine
+processes remained in that prefix.
+
+**Automated coverage.** `tests/test_accounts.py` covers the registry, world
+parsing and persistence, adoption, routing, and copying (excludes, symlinks,
+registry deletion, refusal cases, and cleanup after a failed copy).
+`tests/test_web.py` covers sign-in page detection and link capture/blocking
+through the real policy handler. `tests/app_smoke.py` runs the real GTK window
+with a mocked backend and browser window: install, one-click Play routed to the
+right prefix, copying for the second account, Stop while running, and
+world/rename updates. Rendered screenshots were checked in light and dark mode
+(`docs/launcher.png`).
+
+```sh
+python3 -m unittest discover -s tests -v
+PYTHONPATH=. python3 tests/app_smoke.py
+PYTHONPATH=. python3 tests/desktop_smoke.py
+```

@@ -10,7 +10,8 @@ from msw_helper.cli import main
 from msw_helper.core import Helper, HelperError, make_uri
 from msw_helper.maintenance import mark_installation
 from msw_helper.session import (ACTIVE_APPS, QUIT_MESSAGE, QuitLog, finish_quit,
-                                native_processes, shutdown_prefix, terminate_processes, watch_session)
+                                native_processes, prefix_processes, shutdown_prefix, terminate_processes,
+                                watch_session)
 
 
 class SessionTests(unittest.TestCase):
@@ -181,6 +182,36 @@ class SessionTests(unittest.TestCase):
                     patch('msw_helper.session.terminate_processes') as terminate:
                 shutdown_prefix(self.helper)
                 terminate.assert_called_once_with(self.helper, {'wineserver', 'vuplex webview.vuplex'})
+
+    # Firefox opened from the game (winebrowser -> xdg-open) inherits WINEPREFIX.
+    BROWSER = {20: 'firefox', 21: 'crashhelper', 22: 'web content', 23: 'isolated web co'}
+
+    def test_shutdown_ignores_native_browser_that_inherited_the_prefix(self):
+        with patch('msw_helper.session.shutil.which', return_value='/test/wine'), \
+                patch('msw_helper.session.Path.is_file', return_value=True), \
+                patch('msw_helper.session.subprocess.run'), \
+                patch('msw_helper.session.native_processes',
+                      side_effect=[{12: 'vuplex webview.vuplex', **self.BROWSER}, dict(self.BROWSER)]), \
+                patch('msw_helper.session.terminate_processes') as terminate:
+            shutdown_prefix(self.helper)  # Must not report "incomplete" because of Firefox.
+        terminate.assert_called_once_with(self.helper, {'vuplex webview.vuplex'})
+
+    def test_watcher_exits_when_only_a_native_browser_remains(self):
+        # Seen live: the old watcher retried forever, holding the operation lock.
+        with patch('msw_helper.session.native_processes', return_value=dict(self.BROWSER)), \
+                patch('msw_helper.session.shutdown_prefix') as shutdown, \
+                patch.object(self.helper, 'locked') as locked:
+            watch_session(self.helper)
+        shutdown.assert_not_called()
+        locked.assert_not_called()
+
+    def test_prefix_processes_keeps_wine_and_game_helpers(self):
+        native = {10: 'wineserver', 11: 'msw.exe', 12: 'vuplex webview.vuplex', 13: 'grap-core64.aes',
+                  14: 'crashpad_handle', 15: 'wine64-preloader', **self.BROWSER}
+        with patch('msw_helper.session.native_processes', return_value=native):
+            self.assertEqual(set(prefix_processes(self.helper.prefix).values()),
+                             {'wineserver', 'msw.exe', 'vuplex webview.vuplex', 'grap-core64.aes',
+                              'crashpad_handle', 'wine64-preloader'})
 
     def test_shutdown_does_not_report_success_with_surviving_processes(self):
         with patch('msw_helper.session.shutil.which', return_value='/test/wine'), \

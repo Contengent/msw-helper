@@ -64,10 +64,18 @@ class MaintenanceTests(unittest.TestCase):
             self.assertEqual(hashlib.sha256((self.data / path).read_bytes()).hexdigest(), digest)
         game = (self.data / 'applications' / desktop.APP_ID).read_text()
         manager = (self.data / 'applications' / desktop.MANAGER_ID).read_text()
-        self.assertIn('StartupWMClass=msw.exe\n', game)
-        self.assertIn(' play\n', game)
-        self.assertIn('StartupWMClass=Msw-helper-wine\n', manager)
+        # The manager entry is the visible launcher: users pinned it, and GNOME
+        # drops NoDisplay entries from the dash. The game entry is hidden and
+        # only names/icons the running msw.exe windows.
+        self.assertIn('Name=MapleStory Worlds\n', manager)
+        self.assertNotIn('NoDisplay', manager)
+        self.assertIn(f'StartupWMClass={desktop.GUI_CLASS}\n', manager)
         self.assertIn(' gui\n', manager)
+        self.assertIn('NoDisplay=true\n', game)
+        self.assertIn('StartupWMClass=msw.exe\n', game)
+        self.assertIn(' gui\n', game)
+        for entry in (game, manager):
+            self.assertNotIn('--data-dir', entry)  # The launcher spans all accounts.
         self.assertTrue(os.access(self.helper.home / 'helper/msw', os.X_OK))
         self.assertTrue((self.helper.home / 'helper/msw_helper/resources' / desktop.APP_ID).is_file())
         desktop.register(self.helper)
